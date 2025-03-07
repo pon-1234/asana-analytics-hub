@@ -22,16 +22,16 @@ def setup_cron_job():
         job1 = cron.new(command=f'cd {current_dir} && python3 {current_dir}/src/get_completed_tasks.py >> {current_dir}/logs/asana_tasks.log 2>&1')
         job1.setall('30 8 * * *')  # 毎日午前8時30分に実行
         
-        # BigQueryからスプレッドシートにデータを出力するジョブを作成（毎日午前9時に実行）
+        # BigQueryからスプレッドシートにデータを出力するジョブを作成（毎月1日の午前9時に実行）
         job2 = cron.new(command=f'cd {current_dir} && python3 {current_dir}/src/export_to_sheets.py >> {current_dir}/logs/sheets_export.log 2>&1')
-        job2.setall('0 9 * * *')  # 毎日午前9時に実行
+        job2.setall('0 9 1 * *')  # 毎月1日の午前9時に実行
         
         # 変更を保存
         cron.write()
         
         print("Cronジョブを設定しました。")
         print("- 毎日午前8時30分にAsanaからデータを取得してBigQueryに保存")
-        print("- 毎日午前9時にBigQueryからデータを取得してスプレッドシートに出力")
+        print("- 毎月1日の午前9時にBigQueryからデータを取得してスプレッドシートに出力")
         return True
     
     except Exception as e:

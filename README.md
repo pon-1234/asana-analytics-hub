@@ -60,7 +60,7 @@ python3 src/setup_cron.py
 
 これにより、以下のジョブが設定されます：
 - 毎日午前8時30分：Asanaからデータを取得してBigQueryに保存
-- 毎日午前9時：BigQueryからデータを取得してGoogle Sheetsに出力
+- 毎月1日の午前9時：BigQueryからデータを取得してGoogle Sheetsに出力
 
 ## 使い方
 
