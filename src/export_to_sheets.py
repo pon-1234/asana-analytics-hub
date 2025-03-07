@@ -1,6 +1,6 @@
 import os
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from google.cloud import bigquery
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
@@ -16,8 +16,20 @@ def get_data_from_bigquery():
     project_id = os.getenv('GCP_PROJECT_ID')
     client = bigquery.Client(project=project_id)
     
-    # プロジェクト別の実績時間を取得するクエリ
-    query = """
+    # 先月の日付範囲を計算
+    today = datetime.now()
+    first_day_of_current_month = datetime(today.year, today.month, 1)
+    last_day_of_previous_month = first_day_of_current_month - timedelta(days=1)
+    first_day_of_previous_month = datetime(last_day_of_previous_month.year, last_day_of_previous_month.month, 1)
+    
+    # 日付をフォーマット
+    start_date = first_day_of_previous_month.strftime('%Y-%m-%d')
+    end_date = last_day_of_previous_month.strftime('%Y-%m-%d')
+    
+    print(f"先月のデータを取得します: {start_date} から {end_date}")
+    
+    # プロジェクト別の実績時間を取得するクエリ（先月分のみ）
+    query = f"""
     SELECT 
         project_name, 
         COUNT(*) as tasks_count, 
@@ -28,6 +40,8 @@ def get_data_from_bigquery():
         AVG(estimated_time) as avg_estimated_hours
     FROM 
         `asana-analytics-hub.asana_analytics.completed_tasks` 
+    WHERE
+        completed_at BETWEEN '{start_date}' AND '{end_date}'
     GROUP BY 
         project_name 
     ORDER BY 
@@ -59,12 +73,15 @@ def get_data_from_bigquery():
         "平均実績時間", 
         "合計見積時間", 
         "平均見積時間",
+        "対象期間",
         "最終更新日時"
     ]
     
-    # 現在の日時を追加
+    # 現在の日時と対象期間を追加
     current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    period = f"{start_date} 〜 {end_date}"
     for row in data:
+        row.append(period)
         row.append(current_time)
     
     return [header] + data
