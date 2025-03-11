@@ -12,6 +12,7 @@ SPREADSHEET_ID = '1JpL-_kDN0X2GZYBnvVRqCuLUmHFKBYnTAbIXAuqilXQ'
 # 書き込むシート名
 PROJECT_SHEET_NAME = 'プロジェクト別実績時間'
 ASSIGNEE_SHEET_NAME = '担当者別実績時間'
+PROJECT_ASSIGNEE_SHEET_NAME = 'プロジェクト担当者別実績時間'
 
 def get_data_from_bigquery():
     """BigQueryからデータを取得する"""
@@ -26,34 +27,33 @@ def get_data_from_bigquery():
         -- タスクごとに1行にまとめる（同じタスクが複数プロジェクトに登録されている場合は最初の1つだけ使用）
         SELECT 
             task_id,
-            FIRST_VALUE(task_name) OVER (PARTITION BY task_id ORDER BY completed_at) as task_name,
-            FIRST_VALUE(project_id) OVER (PARTITION BY task_id ORDER BY completed_at) as project_id,
-            FIRST_VALUE(project_name) OVER (PARTITION BY task_id ORDER BY completed_at) as project_name,
-            FIRST_VALUE(assignee_name) OVER (PARTITION BY task_id ORDER BY completed_at) as assignee_name,
-            FIRST_VALUE(completed_at) OVER (PARTITION BY task_id ORDER BY completed_at) as completed_at,
-            FIRST_VALUE(estimated_time) OVER (PARTITION BY task_id ORDER BY completed_at) as estimated_time,
-            FIRST_VALUE(actual_time) OVER (PARTITION BY task_id ORDER BY completed_at) as actual_time,
-            FORMAT_TIMESTAMP("%Y-%m", completed_at) as month,
-            ROW_NUMBER() OVER (PARTITION BY task_id ORDER BY completed_at) as row_num
+            ANY_VALUE(task_name) as task_name,
+            ANY_VALUE(project_id) as project_id,
+            ANY_VALUE(project_name) as project_name,
+            ANY_VALUE(assignee_name) as assignee_name,
+            ANY_VALUE(completed_at) as completed_at,
+            ANY_VALUE(estimated_time) as estimated_time,
+            ANY_VALUE(actual_time) as actual_time,
+            FORMAT_TIMESTAMP("%Y-%m", ANY_VALUE(completed_at)) as month
         FROM 
             `asana-analytics-hub.asana_analytics.completed_tasks`
         WHERE
             completed_at IS NOT NULL
+        GROUP BY
+            task_id
     )
-    -- 各タスクの最初の行だけを使用して、プロジェクト別に集計
+    -- プロジェクト別に集計
     SELECT 
         month,
         project_name, 
         COUNT(*) as tasks_count, 
-        COUNT(actual_time) as tasks_with_actual, 
-        SUM(actual_time) as total_actual_hours,
+        COUNTIF(actual_time IS NOT NULL) as tasks_with_actual, 
+        SUM(IFNULL(actual_time, 0)) as total_actual_hours,
         AVG(actual_time) as avg_actual_hours,
-        SUM(estimated_time) as total_estimated_hours,
+        SUM(IFNULL(estimated_time, 0)) as total_estimated_hours,
         AVG(estimated_time) as avg_estimated_hours
     FROM 
         unique_tasks
-    WHERE
-        row_num = 1
     GROUP BY 
         month, project_name 
     ORDER BY 
@@ -66,40 +66,83 @@ def get_data_from_bigquery():
         -- タスクごとに1行にまとめる（同じタスクが複数プロジェクトに登録されている場合は最初の1つだけ使用）
         SELECT 
             task_id,
-            FIRST_VALUE(task_name) OVER (PARTITION BY task_id ORDER BY completed_at) as task_name,
-            FIRST_VALUE(project_id) OVER (PARTITION BY task_id ORDER BY completed_at) as project_id,
-            FIRST_VALUE(project_name) OVER (PARTITION BY task_id ORDER BY completed_at) as project_name,
-            FIRST_VALUE(assignee_name) OVER (PARTITION BY task_id ORDER BY completed_at) as assignee_name,
-            FIRST_VALUE(completed_at) OVER (PARTITION BY task_id ORDER BY completed_at) as completed_at,
-            FIRST_VALUE(estimated_time) OVER (PARTITION BY task_id ORDER BY completed_at) as estimated_time,
-            FIRST_VALUE(actual_time) OVER (PARTITION BY task_id ORDER BY completed_at) as actual_time,
-            FORMAT_TIMESTAMP("%Y-%m", completed_at) as month,
-            ROW_NUMBER() OVER (PARTITION BY task_id ORDER BY completed_at) as row_num
+            ANY_VALUE(task_name) as task_name,
+            ANY_VALUE(project_id) as project_id,
+            ANY_VALUE(project_name) as project_name,
+            ANY_VALUE(assignee_name) as assignee_name,
+            ANY_VALUE(completed_at) as completed_at,
+            ANY_VALUE(estimated_time) as estimated_time,
+            ANY_VALUE(actual_time) as actual_time,
+            FORMAT_TIMESTAMP("%Y-%m", ANY_VALUE(completed_at)) as month
         FROM 
             `asana-analytics-hub.asana_analytics.completed_tasks`
         WHERE
             completed_at IS NOT NULL
+        GROUP BY
+            task_id
     )
-    -- 各タスクの最初の行だけを使用して、担当者別に集計
+    -- 担当者別に集計
     SELECT 
         month,
         assignee_name, 
         COUNT(*) as tasks_count, 
-        COUNT(actual_time) as tasks_with_actual, 
-        SUM(actual_time) as total_actual_hours,
+        COUNTIF(actual_time IS NOT NULL) as tasks_with_actual, 
+        SUM(IFNULL(actual_time, 0)) as total_actual_hours,
         AVG(actual_time) as avg_actual_hours,
-        SUM(estimated_time) as total_estimated_hours,
+        SUM(IFNULL(estimated_time, 0)) as total_estimated_hours,
         AVG(estimated_time) as avg_estimated_hours
     FROM 
         unique_tasks
     WHERE
-        row_num = 1
-        AND assignee_name IS NOT NULL
+        assignee_name IS NOT NULL
         AND assignee_name != ''
     GROUP BY 
         month, assignee_name 
     ORDER BY 
         month DESC, total_actual_hours DESC
+    """
+    
+    # プロジェクト担当者別の実績時間を取得するクエリ（タスクの重複を排除）
+    project_assignee_query = """
+    WITH unique_tasks AS (
+        -- タスクごとに1行にまとめる（同じタスクが複数プロジェクトに登録されている場合は最初の1つだけ使用）
+        SELECT 
+            task_id,
+            ANY_VALUE(task_name) as task_name,
+            ANY_VALUE(project_id) as project_id,
+            ANY_VALUE(project_name) as project_name,
+            ANY_VALUE(assignee_name) as assignee_name,
+            ANY_VALUE(completed_at) as completed_at,
+            ANY_VALUE(estimated_time) as estimated_time,
+            ANY_VALUE(actual_time) as actual_time,
+            FORMAT_TIMESTAMP("%Y-%m", ANY_VALUE(completed_at)) as month
+        FROM 
+            `asana-analytics-hub.asana_analytics.completed_tasks`
+        WHERE
+            completed_at IS NOT NULL
+        GROUP BY
+            task_id
+    )
+    -- 各タスクの最初の行だけを使用して、プロジェクトと担当者の組み合わせごとに集計
+    SELECT 
+        month,
+        project_name,
+        assignee_name, 
+        COUNT(*) as tasks_count, 
+        COUNTIF(actual_time IS NOT NULL) as tasks_with_actual, 
+        SUM(IFNULL(actual_time, 0)) as total_actual_hours,
+        AVG(actual_time) as avg_actual_hours,
+        SUM(IFNULL(estimated_time, 0)) as total_estimated_hours,
+        AVG(estimated_time) as avg_estimated_hours
+    FROM 
+        unique_tasks
+    WHERE
+        assignee_name IS NOT NULL
+        AND assignee_name != ''
+    GROUP BY 
+        month, project_name, assignee_name 
+    ORDER BY 
+        month DESC, project_name, total_actual_hours DESC
     """
     
     # プロジェクト別データの取得
@@ -111,6 +154,11 @@ def get_data_from_bigquery():
     print("担当者別データを取得中...")
     assignee_job = client.query(assignee_query)
     assignee_results = assignee_job.result()
+    
+    # プロジェクト担当者別データの取得
+    print("プロジェクト担当者別データを取得中...")
+    project_assignee_job = client.query(project_assignee_query)
+    project_assignee_results = project_assignee_job.result()
     
     # プロジェクト別データを整形
     project_data = []
@@ -127,10 +175,51 @@ def get_data_from_bigquery():
             datetime.now().strftime("%Y-%m-%d %H:%M:%S")  # 更新日時
         ])
     
+    # デバッグ: 最初の5件のプロジェクトデータを表示
+    print("\n===== プロジェクトデータのサンプル（最初の5件）=====")
+    for i, row in enumerate(project_data[:5]):
+        print(f"行 {i+1}: {row}")
+    
+    # デバッグ: 月別のデータ集計を表示
+    print("\n===== 月別のプロジェクトデータ集計 =====")
+    month_stats = {}
+    for row in project_data:
+        month = row[7]  # 対象期間（YYYY-MM）
+        if month not in month_stats:
+            month_stats[month] = {
+                'tasks_count': 0,
+                'tasks_with_actual': 0,
+                'total_actual_hours': 0
+            }
+        month_stats[month]['tasks_count'] += row[1]  # タスク数
+        month_stats[month]['tasks_with_actual'] += row[2]  # 実績時間あり
+        month_stats[month]['total_actual_hours'] += row[3]  # 合計実績時間
+    
+    # 月別に表示（降順）
+    for month in sorted(month_stats.keys(), reverse=True):
+        stats = month_stats[month]
+        print(f"月: {month}, タスク数: {stats['tasks_count']}, 実績時間あり: {stats['tasks_with_actual']}, 合計実績時間: {stats['total_actual_hours']}")
+    
     # 担当者別データを整形
     assignee_data = []
     for row in assignee_results:
         assignee_data.append([
+            row.assignee_name,
+            row.tasks_count,
+            row.tasks_with_actual,
+            row.total_actual_hours if row.total_actual_hours else 0,
+            row.avg_actual_hours if row.avg_actual_hours else 0,
+            row.total_estimated_hours if row.total_estimated_hours else 0,
+            row.avg_estimated_hours if row.avg_estimated_hours else 0,
+            row.month,  # 対象期間はYYYY-MM形式
+            datetime.now().strftime("%Y-%m-%d %H:%M:%S")  # 更新日時
+        ])
+    
+    # プロジェクト担当者別データを整形
+    project_assignee_data = []
+    for row in project_assignee_results:
+        project_assignee_data.append([
+            row.project_name,
             row.assignee_name,
             row.tasks_count,
             row.tasks_with_actual,
@@ -167,9 +256,23 @@ def get_data_from_bigquery():
         "最終更新日時"
     ]
     
+    project_assignee_header = [
+        "プロジェクト名",
+        "担当者名", 
+        "タスク数", 
+        "実績時間あり", 
+        "合計実績時間", 
+        "平均実績時間", 
+        "合計見積時間", 
+        "平均見積時間",
+        "対象期間",
+        "最終更新日時"
+    ]
+    
     return {
         'project': [project_header] + project_data,
-        'assignee': [assignee_header] + assignee_data
+        'assignee': [assignee_header] + assignee_data,
+        'project_assignee': [project_assignee_header] + project_assignee_data
     }
 
 def ensure_sheet_exists(service, sheet_name):
@@ -268,6 +371,7 @@ def main():
     
     print(f"取得したプロジェクトデータ: {len(all_data['project']) - 1}行")
     print(f"取得した担当者データ: {len(all_data['assignee']) - 1}行")
+    print(f"取得したプロジェクト担当者別データ: {len(all_data['project_assignee']) - 1}行")
     
     print("Google Sheetsにデータを書き込んでいます...")
     
@@ -294,7 +398,13 @@ def main():
         # 担当者別データを書き込み
         assignee_success = update_spreadsheet(service, ASSIGNEE_SHEET_NAME, all_data['assignee'])
         
-        if project_success and assignee_success:
+        # APIのレート制限を回避するために少し待機
+        time.sleep(5)
+        
+        # プロジェクト担当者別データを書き込み
+        project_assignee_success = update_spreadsheet(service, PROJECT_ASSIGNEE_SHEET_NAME, all_data['project_assignee'])
+        
+        if project_success and assignee_success and project_assignee_success:
             print("すべてのデータの書き込みが完了しました。")
         else:
             print("一部のデータの書き込みに失敗しました。")
