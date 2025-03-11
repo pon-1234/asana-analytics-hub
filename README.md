@@ -1,6 +1,6 @@
 # Asana Analytics Hub
 
-Asanaのタスクデータを取得し、BigQueryに保存して分析するためのツールです。また、分析結果をGoogle Sheetsに出力する機能も備えています。
+Asanaから完了タスクのデータを取得し、BigQueryに保存、Google Sheetsにエクスポートするシステム
 
 ## 機能
 
@@ -20,28 +20,19 @@ Asanaのタスクデータを取得し、BigQueryに保存して分析するた�
 
 ## セットアップ
 
-### 1. 必要なライブラリのインストール
-
+1. 必要なライブラリをインストール
 ```bash
-pip install google-api-python-client google-auth-httplib2 google-auth-oauthlib google-cloud-bigquery python-crontab
+pip install -r requirements.txt
 ```
 
-### 2. 環境変数の設定
+2. 環境変数の設定
+`.env.example`を`.env`としてコピーし、必要な情報を入力してください。
 
-`src/setup_env.sh`ファイルを編集して、必要な環境変数を設定します：
-
-```bash
-# 環境変数を設定
-export ASANA_ACCESS_TOKEN="your_asana_token"
-export ASANA_WORKSPACE_ID="your_workspace_id"
-export GCP_PROJECT_ID="your_gcp_project_id"
-export GOOGLE_APPLICATION_CREDENTIALS="/path/to/your-service-account-key.json"
 ```
-
-設定後、以下のコマンドを実行して環境変数を読み込みます：
-
-```bash
-source src/setup_env.sh
+ASANA_PAT=your_personal_access_token
+GOOGLE_APPLICATION_CREDENTIALS=path_to_your_service_account_json
+GCP_PROJECT_ID=your_google_cloud_project_id
+SPREADSHEET_ID=your_google_sheets_id
 ```
 
 ### 3. Google Sheetsの設定
@@ -55,24 +46,37 @@ source src/setup_env.sh
 以下のコマンドを実行して、Cronジョブを設定します：
 
 ```bash
-python3 src/setup_cron.py
+python src/setup_cron.py
 ```
 
 これにより、以下のジョブが設定されます：
-- 毎日午前8時30分：Asanaからデータを取得してBigQueryに保存
-- 毎月1日の午前9時：BigQueryからデータを取得してGoogle Sheetsに出力
+- 毎日朝8:30に新しいデータをAsanaから取得 (`get_completed_tasks.py`)
+- 毎月1日朝9:00にGoogle Sheetsにデータをエクスポート (`export_to_sheets.py`)
+
+**注意**: `export_to_sheets.py`は全期間のデータをエクスポートします。以前は先月分のみでしたが、現在は全期間のデータを対象としています。
 
 ## 使い方
 
-### 手動実行
-
+1. Asanaからタスクを取得してBigQueryに保存
 ```bash
-# Asanaからデータを取得してBigQueryに保存
-python3 src/get_completed_tasks.py
-
-# BigQueryからデータを取得してGoogle Sheetsに出力
-python3 src/export_to_sheets.py
+python src/get_completed_tasks.py
 ```
+
+2. BigQueryからデータを取得してGoogle Sheetsにエクスポート
+```bash
+python src/export_to_sheets.py
+```
+
+3. Cronジョブの設定
+```bash
+python src/setup_cron.py
+```
+
+Cronジョブにより、以下の処理が自動的に実行されます：
+- 毎日朝8:30に新しいデータをAsanaから取得 (`get_completed_tasks.py`)
+- 毎月1日朝9:00にGoogle Sheetsにデータをエクスポート (`export_to_sheets.py`)
+
+**注意**: `export_to_sheets.py`は全期間のデータをエクスポートします。以前は先月分のみでしたが、現在は全期間のデータを対象としています。
 
 ### ログの確認
 
@@ -83,18 +87,8 @@ python3 src/export_to_sheets.py
 
 ## ファイル構成
 
-- `src/get_completed_tasks.py`: Asanaからタスクデータを取得し、BigQueryに保存するスクリプト
-- `src/export_to_sheets.py`: BigQueryからデータを取得し、Google Sheetsに出力するスクリプト
+- `src/get_completed_tasks.py`: Asanaから完了タスクを取得してBigQueryに保存
+- `src/export_to_sheets.py`: BigQueryからデータを取得してGoogle Sheetsにエクスポート
 - `src/setup_cron.py`: Cronジョブを設定するスクリプト
 - `src/setup_env.sh`: 環境変数を設定するスクリプト
-- `README.md`: プロジェクトの説明
-- `README_SHEETS_EXPORT.md`: Google Sheets出力機能の詳細な説明
-
-## データ構造
-
-### BigQueryテーブル
-
-- tasks: Asanaのタスク情報
-- projects: プロジェクト情報
-- users: ユーザー情報
-- tags: タグ情報 
+- `
