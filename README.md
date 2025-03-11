@@ -6,8 +6,8 @@ Asanaから完了タスクのデータを取得し、BigQueryに保存、Google 
 
 - Asanaからタスクデータを取得し、BigQueryに保存
 - タスクの実績時間を計算（見積時間 × 時間達成率）
-- BigQueryからプロジェクト別の実績時間データを取得（先月分のみ）
-- Google Sheetsにデータを出力
+- BigQueryから月ごとのプロジェクト別実績時間データを取得
+- Google Sheetsに月ごとのデータを別々のシートとして出力
 - Cronジョブによる定期的な自動実行
 
 ## 前提条件
@@ -53,7 +53,7 @@ python src/setup_cron.py
 - 毎日朝8:30に新しいデータをAsanaから取得 (`get_completed_tasks.py`)
 - 毎月1日朝9:00にGoogle Sheetsにデータをエクスポート (`export_to_sheets.py`)
 
-**注意**: `export_to_sheets.py`は全期間のデータをエクスポートします。以前は先月分のみでしたが、現在は全期間のデータを対象としています。
+**注意**: `export_to_sheets.py`は月ごとのデータを別々のシートに出力します。各シートは「YYYY年M月」という名前で作成されます。
 
 ## 使い方
 
@@ -76,7 +76,7 @@ Cronジョブにより、以下の処理が自動的に実行されます：
 - 毎日朝8:30に新しいデータをAsanaから取得 (`get_completed_tasks.py`)
 - 毎月1日朝9:00にGoogle Sheetsにデータをエクスポート (`export_to_sheets.py`)
 
-**注意**: `export_to_sheets.py`は全期間のデータをエクスポートします。以前は先月分のみでしたが、現在は全期間のデータを対象としています。
+**注意**: スプレッドシートへのデータ出力は月ごとに別々のシートに分けて行われます。シート名は「YYYY年M月」の形式（例: 2024年3月）となります。
 
 ### ログの確認
 
@@ -91,4 +91,3 @@ Cronジョブにより、以下の処理が自動的に実行されます：
 - `src/export_to_sheets.py`: BigQueryからデータを取得してGoogle Sheetsにエクスポート
 - `src/setup_cron.py`: Cronジョブを設定するスクリプト
 - `src/setup_env.sh`: 環境変数を設定するスクリプト
-- `
