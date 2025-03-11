@@ -79,11 +79,18 @@ def get_monthly_data_from_bigquery():
     for month, data in monthly_data.items():
         # 月の表示形式を整える（例: 2024-03 → 2024年3月）
         year, month_num = month.split('-')
-        display_month = f"{year}年{int(month_num)}月"
+        year_int = int(year)
+        month_int = int(month_num)
+        
+        # シート名用の表示形式
+        display_month = f"{year}年{month_int}月"
+        
+        # 対象期間はフィルター用に「YYYY-MM」形式のまま使用
+        period = month
         
         # 各行に対象期間と更新日時を追加
         for row in data:
-            row.append(display_month)
+            row.append(period)
             row.append(current_time)
         
         # ヘッダー行を追加
