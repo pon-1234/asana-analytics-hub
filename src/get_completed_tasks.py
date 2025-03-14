@@ -33,13 +33,21 @@ def get_completed_tasks(project_id, project_name):
             # カスタムフィールドの処理
             task['estimated_time'] = None
             task['actual_time'] = None
+            task['actual_time_raw'] = None  # actual_time_raw（分単位）フィールドを初期化
+            has_actual_time_raw = False  # actual_time_rawフィールドの有無を追跡
 
             for field in task.get('custom_fields', []):
                 print(f"Debug - Field: {field['name']}, Type: {field.get('type')}, Value: {field.get('number_value')}, Display Value: {field.get('display_value')}")
                 if field['name'] == 'Estimated time' and field.get('number_value') is not None:
                     task['estimated_time'] = field['number_value']
-                elif field['name'] == '時間達成率' and field.get('number_value') is not None:
-                    # 時間達成率がある場合、見積時間と掛け合わせて実績時間を計算
+                elif field['name'] == 'actual_time_raw' and field.get('number_value') is not None:
+                    # 直接記録された実績時間を使用（分単位）
+                    task['actual_time_raw'] = field['number_value']  # actual_time_rawフィールドを保存（分単位）
+                    task['actual_time'] = field['number_value'] / 60  # 時間単位に変換
+                    has_actual_time_raw = True
+                    print(f"Debug - Using actual_time_raw: {task['actual_time_raw']}分 ({task['actual_time']}時間)")
+                elif field['name'] == '時間達成率' and field.get('number_value') is not None and not has_actual_time_raw:
+                    # actual_time_rawがない場合のみ、時間達成率から実績時間を計算
                     achievement_rate = field['number_value']
                     if task['estimated_time'] is not None and achievement_rate > 0:
                         task['actual_time'] = task['estimated_time'] * achievement_rate
@@ -89,7 +97,8 @@ def create_bigquery_table():
         bigquery.SchemaField("modified_at", "TIMESTAMP"),
         bigquery.SchemaField("inserted_at", "TIMESTAMP"),
         bigquery.SchemaField("estimated_time", "FLOAT"),
-        bigquery.SchemaField("actual_time", "FLOAT")
+        bigquery.SchemaField("actual_time", "FLOAT"),
+        bigquery.SchemaField("actual_time_raw", "FLOAT")  # 分単位の実績時間
     ]
     
     # テーブルの作成（存在しない場合）
@@ -108,9 +117,29 @@ def insert_tasks_to_bigquery(tasks):
     dataset_id = "asana_analytics"
     table_id = "completed_tasks"
     
+    # 既存のタスクIDを取得して重複を防止
+    existing_task_ids = set()
+    query = f"""
+    SELECT DISTINCT task_id 
+    FROM `{project_id}.{dataset_id}.{table_id}`
+    """
+    query_job = client.query(query)
+    for row in query_job:
+        existing_task_ids.add(row.task_id)
+    
+    print(f"既存のタスク数: {len(existing_task_ids)}")
+    
     rows_to_insert = []
+    skipped_count = 0
     for task in tasks:
         if task.get('completed', False):  # 完了タスクのみを処理
+            task_id = task['gid']
+            
+            # 既に存在するタスクはスキップ
+            if task_id in existing_task_ids:
+                skipped_count += 1
+                continue
+                
             assignee = task.get('assignee')
             assignee_name = assignee.get('name') if assignee else ''
             
@@ -128,7 +157,7 @@ def insert_tasks_to_bigquery(tasks):
             modified_at = task['modified_at'].replace('Z', '+00:00')
             
             row = {
-                'task_id': task['gid'],
+                'task_id': task_id,
                 'task_name': task['name'],
                 'project_id': task['project']['gid'],
                 'project_name': task['project']['name'],
@@ -139,7 +168,8 @@ def insert_tasks_to_bigquery(tasks):
                 'modified_at': modified_at,
                 'inserted_at': datetime.utcnow().isoformat(),
                 'estimated_time': task.get('estimated_time'),
-                'actual_time': task.get('actual_time')
+                'actual_time': task.get('actual_time'),
+                'actual_time_raw': task.get('actual_time_raw')  # 分単位の実績時間
             }
             rows_to_insert.append(row)
     
@@ -149,7 +179,9 @@ def insert_tasks_to_bigquery(tasks):
         if errors:
             print(f"エラーが発生しました: {errors}")
         else:
-            print(f"{len(rows_to_insert)}件のタスクデータを保存しました。")
+            print(f"{len(rows_to_insert)}件のタスクデータを保存しました。{skipped_count}件の重複タスクをスキップしました。")
+    else:
+        print(f"新しいタスクはありません。{skipped_count}件の重複タスクをスキップしました。")
 
 def main():
     """メイン処理"""
