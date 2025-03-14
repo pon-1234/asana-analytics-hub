@@ -38,20 +38,36 @@ def get_completed_tasks(project_id, project_name):
 
             for field in task.get('custom_fields', []):
                 print(f"Debug - Field: {field['name']}, Type: {field.get('type')}, Value: {field.get('number_value')}, Display Value: {field.get('display_value')}")
+                
+                # Estimated timeフィールドの処理（分単位で保存）
                 if field['name'] == 'Estimated time' and field.get('number_value') is not None:
+                    # Asanaの見積もり時間は分単位で保存されている
                     task['estimated_time'] = field['number_value']
+                    print(f"Debug - Estimated time: {task['estimated_time']}分")
+                
+                # actual_time_rawフィールドの処理（分単位で保存）
                 elif field['name'] == 'actual_time_raw' and field.get('number_value') is not None:
                     # 直接記録された実績時間を使用（分単位）
                     task['actual_time_raw'] = field['number_value']  # actual_time_rawフィールドを保存（分単位）
                     task['actual_time'] = field['number_value'] / 60  # 時間単位に変換
                     has_actual_time_raw = True
                     print(f"Debug - Using actual_time_raw: {task['actual_time_raw']}分 ({task['actual_time']}時間)")
+                
+                # 時間達成率からactual_timeを計算
                 elif field['name'] == '時間達成率' and field.get('number_value') is not None and not has_actual_time_raw:
                     # actual_time_rawがない場合のみ、時間達成率から実績時間を計算
                     achievement_rate = field['number_value']
                     if task['estimated_time'] is not None and achievement_rate > 0:
-                        task['actual_time'] = task['estimated_time'] * achievement_rate
-                        print(f"Debug - Calculated actual_time: {task['actual_time']} (estimated: {task['estimated_time']} * rate: {achievement_rate})")
+                        # 見積もり時間（分）× 達成率 = 実績時間（分）
+                        task['actual_time_raw'] = task['estimated_time'] * achievement_rate
+                        task['actual_time'] = task['actual_time_raw'] / 60  # 時間単位に変換
+                        print(f"Debug - Calculated actual_time_raw: {task['actual_time_raw']}分 (estimated: {task['estimated_time']}分 * rate: {achievement_rate} = {task['actual_time']}時間)")
+
+            # 担当者情報の詳細なデバッグ
+            if task.get('assignee'):
+                print(f"Debug - Assignee: {task.get('assignee').get('name')} (gid: {task.get('assignee').get('gid')})")
+            else:
+                print(f"Debug - No assignee for task: {task.get('name')} (gid: {task.get('gid')})")
 
             # デバッグ出力を追加
             if task.get('gid') == '1209421344217855':
@@ -96,8 +112,8 @@ def create_bigquery_table():
         bigquery.SchemaField("due_on", "DATE"),
         bigquery.SchemaField("modified_at", "TIMESTAMP"),
         bigquery.SchemaField("inserted_at", "TIMESTAMP"),
-        bigquery.SchemaField("estimated_time", "FLOAT"),
-        bigquery.SchemaField("actual_time", "FLOAT"),
+        bigquery.SchemaField("estimated_time", "FLOAT"),  # 分単位の見積もり時間
+        bigquery.SchemaField("actual_time", "FLOAT"),     # 時間単位の実績時間
         bigquery.SchemaField("actual_time_raw", "FLOAT")  # 分単位の実績時間
     ]
     
@@ -167,9 +183,9 @@ def insert_tasks_to_bigquery(tasks):
                 'due_on': due_on,
                 'modified_at': modified_at,
                 'inserted_at': datetime.utcnow().isoformat(),
-                'estimated_time': task.get('estimated_time'),
-                'actual_time': task.get('actual_time'),
-                'actual_time_raw': task.get('actual_time_raw')  # 分単位の実績時間
+                'estimated_time': task.get('estimated_time'),  # 分単位の見積もり時間
+                'actual_time': task.get('actual_time'),        # 時間単位の実績時間
+                'actual_time_raw': task.get('actual_time_raw') # 分単位の実績時間
             }
             rows_to_insert.append(row)
     
