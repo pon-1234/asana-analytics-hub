@@ -34,6 +34,7 @@ def get_data_from_bigquery():
             ANY_VALUE(completed_at) as completed_at,
             ANY_VALUE(estimated_time) as estimated_time,
             ANY_VALUE(actual_time) as actual_time,
+            ANY_VALUE(actual_time_raw) as actual_time_raw,
             FORMAT_TIMESTAMP("%Y-%m", ANY_VALUE(completed_at)) as month
         FROM 
             `asana-analytics-hub.asana_analytics.completed_tasks`
@@ -50,6 +51,9 @@ def get_data_from_bigquery():
         COUNTIF(actual_time IS NOT NULL) as tasks_with_actual, 
         SUM(IFNULL(actual_time, 0)) as total_actual_hours,
         AVG(actual_time) as avg_actual_hours,
+        COUNTIF(actual_time_raw IS NOT NULL) as tasks_with_actual_raw,
+        SUM(IFNULL(actual_time_raw, 0))/60 as total_actual_raw_hours,
+        AVG(IFNULL(actual_time_raw, 0))/60 as avg_actual_raw_hours,
         SUM(IFNULL(estimated_time, 0)) as total_estimated_hours,
         AVG(estimated_time) as avg_estimated_hours
     FROM 
@@ -73,6 +77,7 @@ def get_data_from_bigquery():
             ANY_VALUE(completed_at) as completed_at,
             ANY_VALUE(estimated_time) as estimated_time,
             ANY_VALUE(actual_time) as actual_time,
+            ANY_VALUE(actual_time_raw) as actual_time_raw,
             FORMAT_TIMESTAMP("%Y-%m", ANY_VALUE(completed_at)) as month
         FROM 
             `asana-analytics-hub.asana_analytics.completed_tasks`
@@ -89,6 +94,9 @@ def get_data_from_bigquery():
         COUNTIF(actual_time IS NOT NULL) as tasks_with_actual, 
         SUM(IFNULL(actual_time, 0)) as total_actual_hours,
         AVG(actual_time) as avg_actual_hours,
+        COUNTIF(actual_time_raw IS NOT NULL) as tasks_with_actual_raw,
+        SUM(IFNULL(actual_time_raw, 0))/60 as total_actual_raw_hours,
+        AVG(IFNULL(actual_time_raw, 0))/60 as avg_actual_raw_hours,
         SUM(IFNULL(estimated_time, 0)) as total_estimated_hours,
         AVG(estimated_time) as avg_estimated_hours
     FROM 
@@ -115,6 +123,7 @@ def get_data_from_bigquery():
             ANY_VALUE(completed_at) as completed_at,
             ANY_VALUE(estimated_time) as estimated_time,
             ANY_VALUE(actual_time) as actual_time,
+            ANY_VALUE(actual_time_raw) as actual_time_raw,
             FORMAT_TIMESTAMP("%Y-%m", ANY_VALUE(completed_at)) as month
         FROM 
             `asana-analytics-hub.asana_analytics.completed_tasks`
@@ -132,6 +141,9 @@ def get_data_from_bigquery():
         COUNTIF(actual_time IS NOT NULL) as tasks_with_actual, 
         SUM(IFNULL(actual_time, 0)) as total_actual_hours,
         AVG(actual_time) as avg_actual_hours,
+        COUNTIF(actual_time_raw IS NOT NULL) as tasks_with_actual_raw,
+        SUM(IFNULL(actual_time_raw, 0))/60 as total_actual_raw_hours,
+        AVG(IFNULL(actual_time_raw, 0))/60 as avg_actual_raw_hours,
         SUM(IFNULL(estimated_time, 0)) as total_estimated_hours,
         AVG(estimated_time) as avg_estimated_hours
     FROM 
@@ -169,6 +181,9 @@ def get_data_from_bigquery():
             row.tasks_with_actual,
             row.total_actual_hours if row.total_actual_hours else 0,
             row.avg_actual_hours if row.avg_actual_hours else 0,
+            row.tasks_with_actual_raw,
+            row.total_actual_raw_hours if row.total_actual_raw_hours else 0,
+            row.avg_actual_raw_hours if row.avg_actual_raw_hours else 0,
             row.total_estimated_hours if row.total_estimated_hours else 0,
             row.avg_estimated_hours if row.avg_estimated_hours else 0,
             row.month,  # 対象期間はYYYY-MM形式
@@ -209,6 +224,9 @@ def get_data_from_bigquery():
             row.tasks_with_actual,
             row.total_actual_hours if row.total_actual_hours else 0,
             row.avg_actual_hours if row.avg_actual_hours else 0,
+            row.tasks_with_actual_raw,
+            row.total_actual_raw_hours if row.total_actual_raw_hours else 0,
+            row.avg_actual_raw_hours if row.avg_actual_raw_hours else 0,
             row.total_estimated_hours if row.total_estimated_hours else 0,
             row.avg_estimated_hours if row.avg_estimated_hours else 0,
             row.month,  # 対象期間はYYYY-MM形式
@@ -225,6 +243,9 @@ def get_data_from_bigquery():
             row.tasks_with_actual,
             row.total_actual_hours if row.total_actual_hours else 0,
             row.avg_actual_hours if row.avg_actual_hours else 0,
+            row.tasks_with_actual_raw,
+            row.total_actual_raw_hours if row.total_actual_raw_hours else 0,
+            row.avg_actual_raw_hours if row.avg_actual_raw_hours else 0,
             row.total_estimated_hours if row.total_estimated_hours else 0,
             row.avg_estimated_hours if row.avg_estimated_hours else 0,
             row.month,  # 対象期間はYYYY-MM形式
@@ -235,9 +256,12 @@ def get_data_from_bigquery():
     project_header = [
         "プロジェクト名", 
         "タスク数", 
-        "実績時間あり", 
-        "合計実績時間", 
-        "平均実績時間", 
+        "実績時間あり（計算値）", 
+        "合計実績時間（計算値）", 
+        "平均実績時間（計算値）", 
+        "実績時間あり（生値）", 
+        "合計実績時間（生値）", 
+        "平均実績時間（生値）", 
         "合計見積時間", 
         "平均見積時間",
         "対象期間",
@@ -247,9 +271,12 @@ def get_data_from_bigquery():
     assignee_header = [
         "担当者名", 
         "タスク数", 
-        "実績時間あり", 
-        "合計実績時間", 
-        "平均実績時間", 
+        "実績時間あり（計算値）", 
+        "合計実績時間（計算値）", 
+        "平均実績時間（計算値）", 
+        "実績時間あり（生値）", 
+        "合計実績時間（生値）", 
+        "平均実績時間（生値）", 
         "合計見積時間", 
         "平均見積時間",
         "対象期間",
@@ -260,9 +287,12 @@ def get_data_from_bigquery():
         "プロジェクト名",
         "担当者名", 
         "タスク数", 
-        "実績時間あり", 
-        "合計実績時間", 
-        "平均実績時間", 
+        "実績時間あり（計算値）", 
+        "合計実績時間（計算値）", 
+        "平均実績時間（計算値）", 
+        "実績時間あり（生値）", 
+        "合計実績時間（生値）", 
+        "平均実績時間（生値）", 
         "合計見積時間", 
         "平均見積時間",
         "対象期間",
