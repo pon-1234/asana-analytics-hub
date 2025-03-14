@@ -1,0 +1,7 @@
+python-dotenv==1.0.0
+requests==2.31.0
+google-cloud-bigquery==3.17.1
+google-cloud-storage==2.14.0
+asana==5.1.0
+pandas==2.2.1
+schedule==1.2.1 
