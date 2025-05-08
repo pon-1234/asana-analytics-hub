@@ -226,5 +226,53 @@ def main():
         print(f"プロジェクト一覧の取得に失敗しました: {response.status_code}")
         print(response.text)
 
+    # プロジェクトIDとプロジェクト名を取得
+    project_gid = project.get('gid')
+    project_name = project.get('name')
+
+    if project_gid == '1206940160607168': # "01_Dot Glamping富士山_全体" のGIDを直接指定
+        print(f"\nプロジェクト「{project_name}」の完了タスクを取得します...")
+        completed_tasks_in_project = get_completed_tasks(project_gid, project_name)
+
+        # 特定のタスクIDのdescriptionを取得して表示 (テスト用)
+        test_task_id = '1209421344217855'
+        if completed_tasks_in_project:
+            for task_info in completed_tasks_in_project:
+                if task_info['gid'] == test_task_id:
+                    print(f"\n--- テスト: タスク「{task_info['name']}」の詳細 --- ")
+                    # Asana APIを直接叩いてdescriptionを取得
+                    try:
+                        task_details_response = requests.get(
+                            f"https://app.asana.com/api/1.0/tasks/{test_task_id}",
+                            headers=headers,
+                            params={'opt_fields': 'name,description'}
+                        )
+                        task_details_response.raise_for_status()
+                        task_details = task_details_response.json().get('data', {})
+                        print(f"タスク名: {task_details.get('name')}")
+                        print(f"説明: {task_details.get('description')}")
+                    except requests.exceptions.RequestException as e:
+                        print(f"タスク詳細の取得中にエラー: {e}")
+                    print("--------------------------------------------")
+                    # テストなので、最初のタスクを見つけたらループを抜ける
+                    # 通常の処理はスキップ
+                    return
+        else:
+            print(f"プロジェクト「{project_name}」で完了タスクは見つかりませんでした。")
+        # テストのため、最初のプロジェクトの処理が終わったら終了
+        return
+
+    # 全プロジェクトの処理はスキップ (テストのため)
+    # all_completed_tasks.extend(completed_tasks_in_project)
+
+    # BigQueryにデータを挿入（テストのためコメントアウト）
+    # if all_completed_tasks:
+    #     insert_tasks_to_bigquery(all_completed_tasks)
+    #     print(f"合計{len(all_completed_tasks)}件のタスクデータをBigQueryに保存しました。")
+    # else:
+    #     print("BigQueryに保存するタスクデータはありませんでした。")
+
 if __name__ == "__main__":
-    main() 
+    # .envファイルから環境変数を読み込む
+    load_dotenv()
+    main() # 通常のmain処理を呼び出すように変更 
