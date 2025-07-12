@@ -23,9 +23,9 @@ def get_all_projects(api_client: asana.ApiClient) -> List[Dict[str, Any]]:
         # opt_fields を指定して必要なフィールドを取得
         projects = projects_api.get_projects_for_workspace(
             config.ASANA_WORKSPACE_ID,
-            opt_fields=["name", "gid"]
+            opts={'opt_fields': 'name,gid'}
         )
-        return [project.to_dict() for project in projects]
+        return list(projects)
     except asana.rest.ApiException as e:
         print(f"Error fetching projects: {e}")
         raise
@@ -76,14 +76,15 @@ def get_completed_tasks_for_project(api_client: asana.ApiClient, project: Dict[s
         # タスクを取得
         tasks = tasks_api.get_tasks_for_project(
             project_id,
-            completed_since='now',  # 最近完了したタスクに絞る
-            opt_fields=['name', 'completed', 'completed_at', 'created_at', 
-                       'modified_at', 'due_on', 'assignee.name', 'custom_fields']
+            opts={
+                'completed_since': 'now',  # 最近完了したタスクに絞る
+                'opt_fields': 'name,completed,completed_at,created_at,modified_at,due_on,assignee.name,custom_fields'
+            }
         )
         
         completed_tasks = []
         for task in tasks:
-            task_dict = task.to_dict()
+            task_dict = task if isinstance(task, dict) else task
             if not task_dict.get('completed') or not task_dict.get('completed_at'):
                 continue
 
