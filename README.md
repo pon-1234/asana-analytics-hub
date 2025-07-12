@@ -1,133 +1,175 @@
 # Asana Analytics Hub
 
-Asanaから完了タスクのデータを取得し、BigQueryに保存、Google Sheetsにエクスポートするシステム
+Asanaから完了タスクのデータを取得し、BigQueryに保存、集計結果をGoogle Sheetsにエクスポートするシステムです。
 
-## 機能
+## 主な機能
 
-- Asanaからタスクデータを取得し、BigQueryに保存
-- タスクの実績時間を計算（見積時間 × 時間達成率）
-- BigQueryから月ごとのプロジェクト別実績時間データを取得
-- Google Sheetsに月ごとのデータを別々のシートとして出力
-- Google Cloud FunctionsとCloud Schedulerによる定期的な自動実行
+-   **データ取得**: Asanaから全てのプロジェクトの完了タスクを定期的に取得し、BigQueryに保存します。
+-   **レポート生成**: BigQuery上のデータを月別に集計し、以下の3つのレポートを生成します。
+    -   プロジェクト別実績時間
+    -   担当者別実績時間
+    -   プロジェクト・担当者別実績時間
+-   **自動化**: Google Cloud FunctionsとCloud Schedulerにより、データ取得とレポート生成を完全に自動化します。
 
-## 前提条件
+## アーキテクチャ
 
-- Python 3.6以上
-- Asana API トークン
-- Google Cloud Platform アカウント
-  - **Cloud Functions, Cloud Scheduler, Cloud Build APIが有効になっていること**
-- BigQuery データセット
-- Google Sheets API アクセス権
+1.  **Cloud Function (fetch-asana-tasks)**: Cloud Schedulerに毎日トリガーされ、Asana APIから完了タスクを取得し、BigQueryの`completed_tasks`テーブルに追記します。
+2.  **Cloud Function (export-to-sheets)**: Cloud Schedulerに毎月トリガーされ、BigQueryの`completed_tasks`テーブルのデータを集計し、結果をGoogle Sheetsに書き込みます。
 
-## セットアップ
+ <!-- 図は後で作成・挿入するとより分かりやすいです -->
 
-1. 必要なライブラリをインストール
+## セットアップ手順
+
+### 1. 前提条件
+
+-   Python 3.9以上
+-   Google Cloud Platform (GCP) アカウント
+    -   Cloud Functions, Cloud Scheduler, Cloud Build, BigQuery, Google Sheets APIが有効になっていること。
+-   AsanaアカウントとPersonal Access Token
+
+### 2. リポジトリのクローンと仮想環境の作成
+
+```bash
+git clone <your-repository-url>
+cd asana-analytics-hub
+python3 -m venv venv
+source venv/bin/activate
+```
+
+### 3. 依存ライブラリのインストール
+
 ```bash
 pip install -r requirements.txt
 ```
 
-2. 環境変数の設定
-ローカルでの手動実行、またはGCPへのデプロイのために、環境変数を設定します。
+### 4. 環境変数の設定
 
-### GCPデプロイ用 (`env.yaml`)
-GCPへデプロイする際は、プロジェクトのルートに`env.yaml`というファイル名で、以下の内容を作成します。`ASANA_ACCESS_TOKEN`には実際のトークンを設定してください。
-```yaml
-ASANA_WORKSPACE_ID: "1206940156947514"
-GCP_PROJECT_ID: "asana-analytics-hub"
-SPREADSHEET_ID: "1JpL-_kDN0X2GZYBnvVRqCuLUmHFKBYnTAbIXAuqilXQ"
-ASANA_ACCESS_TOKEN: "your_personal_access_token"
+`.env.example`をコピーして`.env`ファイルを作成し、ご自身の環境に合わせて値を設定します。
+
+```bash
+cp .env.example .env
 ```
 
-### ローカル実行用 (`.env`)
-ローカル環境で手動実行する場合は、プロジェクトのルートに`.env`ファイルを作成し、同様の内容を`KEY=VALUE`形式で記述します。
+**`.env`ファイルの中身:**
 
-### 3. Google Sheetsの設定
+```
+# Asana設定
+ASANA_ACCESS_TOKEN="<Your Asana Personal Access Token>"
+ASANA_WORKSPACE_ID="<Your Asana Workspace ID>"
 
-1. Google Cloud Consoleで「Google Sheets API」を有効化
-2. サービスアカウントを作成し、JSONキーファイルをダウンロード
-3. スプレッドシートをサービスアカウントと共有
-4. **GCPで自動実行する場合**: サービスアカウントに「Cloud Functions起動元」と「Cloud Schedulerサービスエージェント」のロールを付与します。
+# GCP設定
+GCP_PROJECT_ID="<Your GCP Project ID>"
+GCP_CREDENTIALS_PATH="<Path to your service-account-key.json>" # ローカル実行時のみ
 
-## GCPでのデプロイと自動実行
+# Google Sheets設定
+SPREADSHEET_ID="<Your Google Spreadsheet ID>"
+```
 
-このシステムは、Google Cloud Functionsとしてデプロイし、Cloud Schedulerによって定期的に実行されます。
+**重要**: `.env`ファイルは`.gitignore`で管理対象外になっています。**絶対にGitにコミットしないでください。**
 
-### 1. Cloud Functionsのデプロイ
+### 5. GCPサービスアカウントの設定
 
-以下のコマンドを実行して、2つのCloud Functionをデプロイします。
+1.  GCPコンソールでサービスアカウントを作成し、キー（JSON形式）をダウンロードします。
+2.  ダウンロードしたキーファイルを、プロジェクト内の安全な場所（例: `credentials/key.json`）に配置し、`.env`の`GCP_CREDENTIALS_PATH`にそのパスを記述します。
+3.  サービスアカウントに以下のロールを付与します:
+    -   `BigQuery データ編集者`
+    -   `BigQuery ジョブユーザー`
+    -   `Cloud Functions 起動元` (Schedulerからの実行に必要)
+4.  出力先のGoogleスプレッドシートの「共有」設定で、このサービスアカウントのメールアドレスを追加し、「編集者」の権限を与えます。
 
-**データ取得用Function (`get-completed-tasks`):**
+## ローカルでの手動実行
+
+ローカルで各機能をテスト実行できます。
+
+1.  **Asanaからデータを取得してBigQueryに保存:**
+    ```bash
+    # `asana_reporter`ディレクトリをPythonパスに追加して実行
+    PYTHONPATH=. python3 asana_reporter/main.py fetch
+    ```
+
+2.  **BigQueryからデータを取得してGoogle Sheetsにエクスポート:**
+    ```bash
+    PYTHONPATH=. python3 asana_reporter/main.py export
+    ```
+
+## GCPへのデプロイ
+
+### 1. 環境変数ファイル `env.yaml` の作成
+
+デプロイ用に、以下の内容で`env.yaml`ファイルを作成します。**このファイルには機密情報を含めず、Gitで管理しても安全な情報のみを記述します。**
+
+```yaml
+GCP_PROJECT_ID: "<Your GCP Project ID>"
+ASANA_WORKSPACE_ID: "<Your Asana Workspace ID>"
+SPREADSHEET_ID: "<Your Google Spreadsheet ID>"
+```
+
+### 2. Cloud Functionsのデプロイ
+
+**ASANA_ACCESS_TOKENは、デプロイ時に`--set-secrets`フラグを使ってSecret Managerから安全に読み込みます。**
+
+**事前準備: Secret ManagerにAsanaのトークンを保存**
 ```bash
-gcloud functions deploy get-completed-tasks \
-  --project=asana-analytics-hub \
+gcloud secrets create asana-access-token --project=<Your GCP Project ID>
+gcloud secrets versions add asana-access-token --data-from-file=- --project=<Your GCP Project ID>
+# 上記コマンド実行後、ターミナルにトークンをペーストしてCtrl+Dで完了
+```
+
+**データ取得用Function (`fetch-asana-tasks`):**
+
+```bash
+gcloud functions deploy fetch-asana-tasks \
+  --project=<Your GCP Project ID> \
   --region=asia-northeast1 \
   --runtime=python311 \
-  --source=src/ \
-  --entry-point=gcf_entrypoint \
+  --source=./asana_reporter \
+  --entry-point=fetch_asana_tasks_to_bq \
   --trigger-http \
+  --allow-unauthenticated \
   --env-vars-file=env.yaml \
+  --set-secrets=ASANA_ACCESS_TOKEN=asana-access-token:latest \
   --timeout=540s
 ```
 
 **スプレッドシート出力用Function (`export-to-sheets`):**
+
 ```bash
 gcloud functions deploy export-to-sheets \
-  --project=asana-analytics-hub \
+  --project=<Your GCP Project ID> \
   --region=asia-northeast1 \
   --runtime=python311 \
-  --source=src/ \
-  --entry-point=gcf_entrypoint \
+  --source=./asana_reporter \
+  --entry-point=export_reports_to_sheets \
   --trigger-http \
+  --allow-unauthenticated \
   --env-vars-file=env.yaml \
+  --set-secrets=ASANA_ACCESS_TOKEN=asana-access-token:latest \
   --timeout=540s
 ```
 
-### 2. Cloud Schedulerの設定
+### 3. Cloud Schedulerの設定
 
-デプロイしたCloud Functionsを定期的に呼び出すためのジョブを設定します。
+**データ取得用ジョブ（毎日朝5:00）:**
 
-**データ取得用ジョブ（毎日朝8:30）:**
 ```bash
-gcloud scheduler jobs create http get-tasks-daily \
-  --project=asana-analytics-hub \
+gcloud scheduler jobs create http fetch-tasks-daily \
+  --project=<Your GCP Project ID> \
   --location=asia-northeast1 \
-  --schedule="30 8 * * *" \
-  --uri="YOUR_GET_COMPLETED_TASKS_FUNCTION_URL" \
+  --schedule="0 5 * * *" \
+  --time-zone="Asia/Tokyo" \
+  --uri="<YOUR_FETCH_TASKS_FUNCTION_URL>" \
   --http-method=POST
 ```
 
-**スプレッドシート出力用ジョブ（毎月1日朝9:00）:**
+**スプレッドシート出力用ジョブ（毎月1日朝6:00）:**
+
 ```bash
 gcloud scheduler jobs create http export-sheets-monthly \
-  --project=asana-analytics-hub \
+  --project=<Your GCP Project ID> \
   --location=asia-northeast1 \
-  --schedule="0 9 1 * *" \
-  --uri="YOUR_EXPORT_TO_SHEETS_FUNCTION_URL" \
+  --schedule="0 6 1 * *" \
+  --time-zone="Asia/Tokyo" \
+  --uri="<YOUR_EXPORT_TO_SHEETS_FUNCTION_URL>" \
   --http-method=POST
 ```
-**注意:** `YOUR_..._FUNCTION_URL`の部分は、各Cloud Functionをデプロイした際に表示されるトリガーURLに置き換えてください。
-
-## 使い方 (ローカルでの手動実行)
-
-1. Asanaからタスクを取得してBigQueryに保存
-```bash
-python src/get_completed_tasks.py
-```
-
-2. BigQueryからデータを取得してGoogle Sheetsにエクスポート
-```bash
-python src/export_to_sheets.py
-```
-
-## ログの確認
-
-- **Cloud Functionsのログ**: GCPコンソールのCloud Loggingページで各関数のログを確認できます。
-- **ローカル実行時のログ**:
-  - Asanaデータ取得のログ：`logs/asana_tasks.log`
-  - スプレッドシート出力のログ：`logs/sheets_export.log`
-
-## ファイル構成
-
-- `src/get_completed_tasks.py`: Asanaから完了タスクを取得してBigQueryに保存
-- `src/export_to_sheets.py`: BigQueryからデータを取得してGoogle Sheetsにエクスポート
-- `env.yaml`: GCPデプロイ用の環境変数設定ファイル
+**注意**: `<YOUR_..._FUNCTION_URL>`は、各Functionをデプロイした際に表示されるトリガーURLに置き換えてください。
