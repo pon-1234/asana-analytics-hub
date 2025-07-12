@@ -6,6 +6,10 @@ from google.cloud import bigquery
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
+from dotenv import load_dotenv
+
+# 環境変数の読み込み
+load_dotenv()
 
 # スプレッドシートのID
 SPREADSHEET_ID = '1JpL-_kDN0X2GZYBnvVRqCuLUmHFKBYnTAbIXAuqilXQ'
@@ -20,29 +24,41 @@ def get_data_from_bigquery():
     client = bigquery.Client(project=project_id)
     
     print("データを取得します")
-    
-    # プロジェクト別の実績時間を取得するクエリ（タスクの重複を排除）
-    project_query = """
-    WITH unique_tasks AS (
-        -- タスクごとに1行にまとめる（同じタスクが複数プロジェクトに登録されている場合は最初の1つだけ使用）
-        SELECT 
+
+    # 共通テーブル式（CTE）を定義
+    # 各タスクについて、最も適切な代表レコードを1つだけ選ぶ
+    # 担当者名がNULLでないものを優先し、次に完了日が新しいものを優先
+    base_query = """
+    WITH task_representatives AS (
+        SELECT
             task_id,
-            ANY_VALUE(task_name) as task_name,
-            ANY_VALUE(project_id) as project_id,
-            ANY_VALUE(project_name) as project_name,
-            ANY_VALUE(assignee_name) as assignee_name,
-            ANY_VALUE(completed_at) as completed_at,
-            ANY_VALUE(estimated_time) as estimated_time,
-            ANY_VALUE(actual_time) as actual_time,
-            ANY_VALUE(actual_time_raw) as actual_time_raw,
-            FORMAT_TIMESTAMP("%Y-%m", ANY_VALUE(completed_at)) as month
-        FROM 
-            `asana-analytics-hub.asana_analytics.completed_tasks`
-        WHERE
-            completed_at IS NOT NULL
-        GROUP BY
-            task_id
+            ARRAY_AGG(
+                t
+                ORDER BY (CASE WHEN assignee_name IS NOT NULL AND assignee_name != '' THEN 0 ELSE 1 END), completed_at DESC
+                LIMIT 1
+            )[OFFSET(0)] AS representative
+        FROM `asana-analytics-hub.asana_analytics.completed_tasks` t
+        WHERE completed_at IS NOT NULL
+        GROUP BY task_id
+    ),
+    unique_tasks AS (
+        SELECT
+            representative.task_id,
+            representative.task_name,
+            representative.project_id,
+            representative.project_name,
+            representative.assignee_name,
+            representative.completed_at,
+            representative.estimated_time,
+            representative.actual_time,
+            representative.actual_time_raw,
+            FORMAT_TIMESTAMP("%Y-%m", representative.completed_at) as month
+        FROM task_representatives
     )
+    """
+    
+    # プロジェクト別の実績時間を取得するクエリ
+    project_query = base_query + """
     -- プロジェクト別に集計
     SELECT 
         month,
@@ -64,28 +80,8 @@ def get_data_from_bigquery():
         month DESC, total_actual_hours DESC
     """
     
-    # 担当者別の実績時間を取得するクエリ（タスクの重複を排除）
-    assignee_query = """
-    WITH unique_tasks AS (
-        -- タスクごとに1行にまとめる（同じタスクが複数プロジェクトに登録されている場合は最初の1つだけ使用）
-        SELECT 
-            task_id,
-            ANY_VALUE(task_name) as task_name,
-            ANY_VALUE(project_id) as project_id,
-            ANY_VALUE(project_name) as project_name,
-            ANY_VALUE(assignee_name) as assignee_name,
-            ANY_VALUE(completed_at) as completed_at,
-            ANY_VALUE(estimated_time) as estimated_time,
-            ANY_VALUE(actual_time) as actual_time,
-            ANY_VALUE(actual_time_raw) as actual_time_raw,
-            FORMAT_TIMESTAMP("%Y-%m", ANY_VALUE(completed_at)) as month
-        FROM 
-            `asana-analytics-hub.asana_analytics.completed_tasks`
-        WHERE
-            completed_at IS NOT NULL
-        GROUP BY
-            task_id
-    )
+    # 担当者別の実績時間を取得するクエリ
+    assignee_query = base_query + """
     -- 担当者別に集計
     SELECT 
         month,
@@ -102,37 +98,16 @@ def get_data_from_bigquery():
     FROM 
         unique_tasks
     WHERE
-        assignee_name IS NOT NULL
-        AND assignee_name != ''
+        assignee_name IS NOT NULL AND assignee_name != ''
     GROUP BY 
         month, assignee_name 
     ORDER BY 
         month DESC, total_actual_hours DESC
     """
     
-    # プロジェクト担当者別の実績時間を取得するクエリ（タスクの重複を排除）
-    project_assignee_query = """
-    WITH unique_tasks AS (
-        -- タスクごとに1行にまとめる（同じタスクが複数プロジェクトに登録されている場合は最初の1つだけ使用）
-        SELECT 
-            task_id,
-            ANY_VALUE(task_name) as task_name,
-            ANY_VALUE(project_id) as project_id,
-            ANY_VALUE(project_name) as project_name,
-            ANY_VALUE(assignee_name) as assignee_name,
-            ANY_VALUE(completed_at) as completed_at,
-            ANY_VALUE(estimated_time) as estimated_time,
-            ANY_VALUE(actual_time) as actual_time,
-            ANY_VALUE(actual_time_raw) as actual_time_raw,
-            FORMAT_TIMESTAMP("%Y-%m", ANY_VALUE(completed_at)) as month
-        FROM 
-            `asana-analytics-hub.asana_analytics.completed_tasks`
-        WHERE
-            completed_at IS NOT NULL
-        GROUP BY
-            task_id
-    )
-    -- 各タスクの最初の行だけを使用して、プロジェクトと担当者の組み合わせごとに集計
+    # プロジェクト担当者別の実績時間を取得するクエリ
+    project_assignee_query = base_query + """
+    -- プロジェクトと担当者の組み合わせごとに集計
     SELECT 
         month,
         project_name,
@@ -149,8 +124,7 @@ def get_data_from_bigquery():
     FROM 
         unique_tasks
     WHERE
-        assignee_name IS NOT NULL
-        AND assignee_name != ''
+        assignee_name IS NOT NULL AND assignee_name != ''
     GROUP BY 
         month, project_name, assignee_name 
     ORDER BY 
@@ -445,5 +419,11 @@ def main():
     except Exception as e:
         print(f"予期せぬエラーが発生しました: {e}")
 
+def export_sheets_entrypoint(request):
+    """Cloud Functionのエントリーポイント"""
+    main()
+    return "OK", 200
+
 if __name__ == "__main__":
+    load_dotenv()
     main() 

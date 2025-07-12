@@ -16,7 +16,7 @@ def get_completed_tasks(project_id, project_name):
     
     url = f'https://app.asana.com/api/1.0/projects/{project_id}/tasks'
     params = {
-        'opt_fields': 'name,completed,completed_at,created_at,modified_at,due_on,assignee,custom_fields,custom_fields.name,custom_fields.number_value,custom_fields.display_value,custom_fields.type'
+        'opt_fields': 'name,completed,completed_at,created_at,modified_at,due_on,assignee,assignee.name,custom_fields,custom_fields.name,custom_fields.number_value,custom_fields.display_value,custom_fields.type'
     }
     
     response = requests.get(url, headers=headers, params=params)
@@ -37,21 +37,18 @@ def get_completed_tasks(project_id, project_name):
             has_actual_time_raw = False  # actual_time_rawフィールドの有無を追跡
 
             for field in task.get('custom_fields', []):
-                print(f"Debug - Field: {field['name']}, Type: {field.get('type')}, Value: {field.get('number_value')}, Display Value: {field.get('display_value')}")
                 
                 # Estimated timeフィールドの処理（分単位で保存）
                 if field['name'] == 'Estimated time' and field.get('number_value') is not None:
                     # Asanaの見積もり時間は分単位で保存されている
                     task['estimated_time'] = field['number_value']
-                    print(f"Debug - Estimated time: {task['estimated_time']}分")
                 
                 # actual_time_rawフィールドの処理（分単位で保存）
-                elif field['name'] == 'actual_time_raw' and field.get('number_value') is not None:
+                elif field['name'] == 'actual_time_raw' and field.get('number_value') is not None and field.get('number_value') > 0:
                     # 直接記録された実績時間を使用（分単位）
                     task['actual_time_raw'] = field['number_value']  # actual_time_rawフィールドを保存（分単位）
                     task['actual_time'] = field['number_value'] / 60  # 時間単位に変換
                     has_actual_time_raw = True
-                    print(f"Debug - Using actual_time_raw: {task['actual_time_raw']}分 ({task['actual_time']}時間)")
                 
                 # 時間達成率からactual_timeを計算
                 elif field['name'] == '時間達成率' and field.get('number_value') is not None and not has_actual_time_raw:
@@ -61,19 +58,6 @@ def get_completed_tasks(project_id, project_name):
                         # 見積もり時間（分）× 達成率 = 実績時間（分）
                         task['actual_time_raw'] = task['estimated_time'] * achievement_rate
                         task['actual_time'] = task['actual_time_raw'] / 60  # 時間単位に変換
-                        print(f"Debug - Calculated actual_time_raw: {task['actual_time_raw']}分 (estimated: {task['estimated_time']}分 * rate: {achievement_rate} = {task['actual_time']}時間)")
-
-            # 担当者情報の詳細なデバッグ
-            if task.get('assignee'):
-                print(f"Debug - Assignee: {task.get('assignee').get('name')} (gid: {task.get('assignee').get('gid')})")
-            else:
-                print(f"Debug - No assignee for task: {task.get('name')} (gid: {task.get('gid')})")
-
-            # デバッグ出力を追加
-            if task.get('gid') == '1209421344217855':
-                print("Debug - Custom Fields for task:", task.get('name'))
-                for cf in task.get('custom_fields', []):
-                    print(f"Field Name: {cf.get('name')}, Value: {cf.get('display_value')}")
 
             # 完了タスクのみを保存
             if task.get('completed', False) and task.get('completed_at'):
@@ -226,51 +210,11 @@ def main():
         print(f"プロジェクト一覧の取得に失敗しました: {response.status_code}")
         print(response.text)
 
-    # プロジェクトIDとプロジェクト名を取得
-    project_gid = project.get('gid')
-    project_name = project.get('name')
-
-    if project_gid == '1206940160607168': # "01_Dot Glamping富士山_全体" のGIDを直接指定
-        print(f"\nプロジェクト「{project_name}」の完了タスクを取得します...")
-        completed_tasks_in_project = get_completed_tasks(project_gid, project_name)
-
-        # 特定のタスクIDのdescriptionを取得して表示 (テスト用)
-        test_task_id = '1209421344217855'
-        if completed_tasks_in_project:
-            for task_info in completed_tasks_in_project:
-                if task_info['gid'] == test_task_id:
-                    print(f"\n--- テスト: タスク「{task_info['name']}」の詳細 --- ")
-                    # Asana APIを直接叩いてdescriptionを取得
-                    try:
-                        task_details_response = requests.get(
-                            f"https://app.asana.com/api/1.0/tasks/{test_task_id}",
-                            headers=headers,
-                            params={'opt_fields': 'name,description'}
-                        )
-                        task_details_response.raise_for_status()
-                        task_details = task_details_response.json().get('data', {})
-                        print(f"タスク名: {task_details.get('name')}")
-                        print(f"説明: {task_details.get('description')}")
-                    except requests.exceptions.RequestException as e:
-                        print(f"タスク詳細の取得中にエラー: {e}")
-                    print("--------------------------------------------")
-                    # テストなので、最初のタスクを見つけたらループを抜ける
-                    # 通常の処理はスキップ
-                    return
-        else:
-            print(f"プロジェクト「{project_name}」で完了タスクは見つかりませんでした。")
-        # テストのため、最初のプロジェクトの処理が終わったら終了
-        return
-
-    # 全プロジェクトの処理はスキップ (テストのため)
-    # all_completed_tasks.extend(completed_tasks_in_project)
-
-    # BigQueryにデータを挿入（テストのためコメントアウト）
-    # if all_completed_tasks:
-    #     insert_tasks_to_bigquery(all_completed_tasks)
-    #     print(f"合計{len(all_completed_tasks)}件のタスクデータをBigQueryに保存しました。")
-    # else:
-    #     print("BigQueryに保存するタスクデータはありませんでした。")
+def get_tasks_entrypoint(request):
+    """Cloud Functionのエントリーポイント"""
+    # .envファイルはGCFでは使われない。環境変数はランタイムに設定される。
+    main()
+    return "OK", 200
 
 if __name__ == "__main__":
     # .envファイルから環境変数を読み込む

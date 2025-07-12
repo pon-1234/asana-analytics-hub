@@ -9,60 +9,42 @@ load_dotenv()
 project_id = os.getenv('GCP_PROJECT_ID')
 client = bigquery.Client(project=project_id)
 
-# サンプルデータを取得するクエリ
-query = """
-SELECT * 
-FROM `asana-analytics-hub.asana_analytics.completed_tasks` 
-LIMIT 5
+table_id = "asana-analytics-hub.asana_analytics.completed_tasks"
+
+# assignee_nameカラムの状態を確認するクエリ
+check_query = f"""
+SELECT
+    COUNT(*) AS total_rows,
+    COUNTIF(assignee_name IS NULL) AS null_assignees,
+    COUNTIF(assignee_name = '') AS empty_string_assignees,
+    COUNTIF(assignee_name IS NOT NULL AND assignee_name != '') AS valid_assignees
+FROM `{table_id}`
 """
 
-# クエリの実行
-query_job = client.query(query)
+print(f"テーブル `{table_id}` の `assignee_name` カラムの状態を確認します...")
+query_job = client.query(check_query)
 results = query_job.result()
 
-# カラム名の表示
-print('カラム名:')
-for field in results.schema:
-    print(field.name)
-
-# サンプルデータの表示
-print('\nサンプルデータ:')
 for row in results:
-    print(row)
+    print(f"  - 総行数: {row.total_rows}")
+    print(f"  - assignee_nameがNULLの行数: {row.null_assignees}")
+    print(f"  - assignee_nameが空文字列('')の行数: {row.empty_string_assignees}")
+    print(f"  - assignee_nameに有効な名前が入っている行数: {row.valid_assignees}")
 
-# actual_timeとestimated_timeのNULL値の数を確認
-null_check_query = """
-SELECT 
-    COUNT(*) as total_rows,
-    COUNTIF(actual_time IS NULL) as null_actual_time,
-    COUNTIF(estimated_time IS NULL) as null_estimated_time
-FROM `asana-analytics-hub.asana_analytics.completed_tasks`
+# 有効な担当者名のサンプルを取得
+sample_query = f"""
+SELECT DISTINCT assignee_name
+FROM `{table_id}`
+WHERE assignee_name IS NOT NULL AND assignee_name != ''
+LIMIT 10
 """
+print("\n有効な担当者名のサンプル:")
+query_job = client.query(sample_query)
+results = query_job.result()
+sample_count = 0
+for row in results:
+    print(f"  - {row.assignee_name}")
+    sample_count += 1
 
-null_check_job = client.query(null_check_query)
-null_check_results = null_check_job.result()
-
-print('\nNULL値の確認:')
-for row in null_check_results:
-    print(f"総行数: {row.total_rows}")
-    print(f"actual_timeがNULLの行数: {row.null_actual_time} ({row.null_actual_time/row.total_rows*100:.2f}%)")
-    print(f"estimated_timeがNULLの行数: {row.null_estimated_time} ({row.null_estimated_time/row.total_rows*100:.2f}%)")
-
-# 0値の数を確認
-zero_check_query = """
-SELECT 
-    COUNT(*) as total_rows,
-    COUNTIF(actual_time = 0) as zero_actual_time,
-    COUNTIF(estimated_time = 0) as zero_estimated_time
-FROM `asana-analytics-hub.asana_analytics.completed_tasks`
-WHERE actual_time IS NOT NULL AND estimated_time IS NOT NULL
-"""
-
-zero_check_job = client.query(zero_check_query)
-zero_check_results = zero_check_job.result()
-
-print('\n0値の確認:')
-for row in zero_check_results:
-    print(f"NULL以外の行数: {row.total_rows}")
-    print(f"actual_timeが0の行数: {row.zero_actual_time} ({row.zero_actual_time/row.total_rows*100:.2f}%)")
-    print(f"estimated_timeが0の行数: {row.zero_estimated_time} ({row.zero_estimated_time/row.total_rows*100:.2f}%)") 
+if sample_count == 0:
+    print("  (有効な担当者名が見つかりませんでした)") 
