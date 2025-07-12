@@ -1,6 +1,8 @@
 import sys
 import time
 from typing import List, Dict, Any
+import functions_framework
+from flask import Request
 
 # ローカル実行時に `PYTHONPATH=.` を使わずに済むようにパスを追加
 # sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -22,7 +24,8 @@ def _fetch_all_tasks() -> List[Dict[str, Any]]:
 
 # --- Cloud Function Entrypoints ---
 
-def fetch_asana_tasks_to_bq(request=None):
+@functions_framework.http
+def fetch_asana_tasks_to_bq(request: Request):
     """
     Asanaからデータを取得し、BigQueryに保存するCloud Function。
     HTTPトリガーまたは直接呼び出しで実行可能。
@@ -54,7 +57,8 @@ def fetch_asana_tasks_to_bq(request=None):
         traceback.print_exc()
         return "Error", 500
 
-def export_reports_to_sheets(request=None):
+@functions_framework.http
+def export_reports_to_sheets(request: Request):
     """
     BigQueryからデータを集計し、Google Sheetsに出力するCloud Function。
     """
