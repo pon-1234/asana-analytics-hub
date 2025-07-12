@@ -1,17 +1,34 @@
 import asana
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Tuple
 
 from . import config
 
-def get_asana_client() -> asana.Client:
-    """Asana APIクライアントを初期化して返す"""
-    return asana.Client.access_token(config.ASANA_ACCESS_TOKEN)
+def get_asana_client() -> Tuple[asana.ApiClient, asana.ProjectsApi, asana.TasksApi]:
+    """Asana APIクライアントと必要なAPIインスタンスを初期化して返す"""
+    configuration = asana.Configuration()
+    configuration.access_token = config.ASANA_ACCESS_TOKEN
+    api_client = asana.ApiClient(configuration)
+    
+    projects_api = asana.ProjectsApi(api_client)
+    tasks_api = asana.TasksApi(api_client)
+    
+    return api_client, projects_api, tasks_api
 
-def get_all_projects(client: asana.Client) -> List[Dict[str, Any]]:
+def get_all_projects(api_client: asana.ApiClient) -> List[Dict[str, Any]]:
     """ワークスペース内の全てのプロジェクトを取得する"""
+    _, projects_api, _ = get_asana_client()
     print(f"Fetching projects from workspace: {config.ASANA_WORKSPACE_ID}")
-    projects = client.projects.get_projects({'workspace': config.ASANA_WORKSPACE_ID}, opt_pretty=True)
-    return list(projects)
+    
+    try:
+        # opt_fields を指定して必要なフィールドを取得
+        projects = projects_api.get_projects_for_workspace(
+            config.ASANA_WORKSPACE_ID,
+            opt_fields=["name", "gid"]
+        )
+        return [project.to_dict() for project in projects]
+    except asana.rest.ApiException as e:
+        print(f"Error fetching projects: {e}")
+        raise
 
 def _parse_custom_fields(task: Dict[str, Any]) -> Dict[str, Any]:
     """タスクのカスタムフィールドを解析し、時間関連の値を抽出する"""
@@ -47,40 +64,43 @@ def _parse_custom_fields(task: Dict[str, Any]) -> Dict[str, Any]:
         "actual_time_raw": actual_time_raw
     }
 
-def get_completed_tasks_for_project(client: asana.Client, project: Dict[str, Any]) -> List[Dict[str, Any]]:
+def get_completed_tasks_for_project(api_client: asana.ApiClient, project: Dict[str, Any]) -> List[Dict[str, Any]]:
     """指定されたプロジェクトの完了タスクを取得し、整形する"""
+    _, _, tasks_api = get_asana_client()
     project_id = project['gid']
     project_name = project['name']
     
     print(f"Fetching tasks for project: '{project_name}' ({project_id})")
     
     try:
-        tasks_iterator = client.tasks.get_tasks({
-            'project': project_id,
-            'completed_since': 'now', # 最近完了したタスクに絞る（APIの効率化）
-            'opt_fields': 'name,completed,completed_at,created_at,modified_at,due_on,assignee.name,custom_fields'
-        }, opt_pretty=True)
+        # タスクを取得
+        tasks = tasks_api.get_tasks_for_project(
+            project_id,
+            completed_since='now',  # 最近完了したタスクに絞る
+            opt_fields=['name', 'completed', 'completed_at', 'created_at', 
+                       'modified_at', 'due_on', 'assignee.name', 'custom_fields']
+        )
         
-        tasks = list(tasks_iterator)
         completed_tasks = []
         for task in tasks:
-            if not task.get('completed') or not task.get('completed_at'):
+            task_dict = task.to_dict()
+            if not task_dict.get('completed') or not task_dict.get('completed_at'):
                 continue
 
-            time_fields = _parse_custom_fields(task)
+            time_fields = _parse_custom_fields(task_dict)
             
-            assignee = task.get('assignee')
+            assignee = task_dict.get('assignee')
             
             formatted_task = {
-                'task_id': task['gid'],
-                'task_name': task['name'],
+                'task_id': task_dict['gid'],
+                'task_name': task_dict['name'],
                 'project_id': project_id,
                 'project_name': project_name,
                 'assignee_name': assignee.get('name') if assignee else None,
-                'completed_at': task['completed_at'],
-                'created_at': task['created_at'],
-                'due_on': task.get('due_on'),
-                'modified_at': task['modified_at'],
+                'completed_at': task_dict['completed_at'],
+                'created_at': task_dict['created_at'],
+                'due_on': task_dict.get('due_on'),
+                'modified_at': task_dict['modified_at'],
                 **time_fields
             }
             completed_tasks.append(formatted_task)
@@ -88,6 +108,6 @@ def get_completed_tasks_for_project(client: asana.Client, project: Dict[str, Any
         print(f"Found {len(completed_tasks)} completed tasks in '{project_name}'.")
         return completed_tasks
 
-    except asana.error.AsanaError as e:
+    except asana.rest.ApiException as e:
         print(f"Error fetching tasks for project '{project_name}': {e}")
         return []

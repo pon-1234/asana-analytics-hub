@@ -11,12 +11,12 @@ from . import asana, bigquery, sheets, config
 
 def _fetch_all_tasks() -> List[Dict[str, Any]]:
     """全てのプロジェクトから完了タスクを取得してリストにまとめる"""
-    asana_client = asana.get_asana_client()
-    projects = asana.get_all_projects(asana_client)
+    api_client, _, _ = asana.get_asana_client()
+    projects = asana.get_all_projects(api_client)
     
     all_tasks = []
     for project in projects:
-        tasks = asana.get_completed_tasks_for_project(asana_client, project)
+        tasks = asana.get_completed_tasks_for_project(api_client, project)
         all_tasks.extend(tasks)
         time.sleep(1) # APIレート制限を避けるための短い待機
     
@@ -98,10 +98,13 @@ if __name__ == '__main__':
         command = sys.argv[1]
         if command == 'fetch':
             print("Running 'fetch_asana_tasks_to_bq' locally...")
-            fetch_asana_tasks_to_bq()
+            # ローカル実行用のダミーリクエストオブジェクト
+            class DummyRequest:
+                pass
+            fetch_asana_tasks_to_bq(DummyRequest())
         elif command == 'export':
             print("Running 'export_reports_to_sheets' locally...")
-            export_reports_to_sheets()
+            export_reports_to_sheets(DummyRequest())
         else:
             print(f"Unknown command: {command}. Use 'fetch' or 'export'.")
     else:
