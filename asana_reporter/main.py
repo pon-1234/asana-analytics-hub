@@ -25,37 +25,105 @@ def _fetch_all_tasks() -> List[Dict[str, Any]]:
 # --- Cloud Function Entrypoints ---
 
 @functions_framework.http
-def fetch_asana_tasks_to_bq(request: Request):
-    """
-    Asanaからデータを取得し、BigQueryに保存するCloud Function。
-    HTTPトリガーまたは直接呼び出しで実行可能。
-    """
-    print("--- Starting Asana to BigQuery sync ---")
+def fetch_asana_tasks_to_bq(request):
+    """Asanaからタスクを取得してBigQueryに保存する（差分取得・バッチ処理対応）"""
     try:
-        config.validate_config()
+        # リクエストパラメータを取得
+        request_json = request.get_json(silent=True)
+        if request_json:
+            project_filter = request_json.get('project_filter')
+            incremental = request_json.get('incremental', False)
+            batch_size = request_json.get('batch_size', 10)  # デフォルト10プロジェクトずつ
+            batch_number = request_json.get('batch_number', 0)  # バッチ番号
+        else:
+            project_filter = None
+            incremental = False
+            batch_size = 10
+            batch_number = 0
         
-        # 1. Asanaからタスクを取得
-        tasks = _fetch_all_tasks()
-        if not tasks:
-            print("No completed tasks found to sync.")
-            return "OK: No new tasks.", 200
-
-        # 2. BigQueryクライアントを準備し、テーブルを確保
-        bq_client = bigquery.get_bigquery_client()
-        bigquery.ensure_table_exists(bq_client)
-
-        # 3. BigQueryにデータを挿入
-        bigquery.insert_tasks(bq_client, tasks)
+        print(f"Starting fetch with project_filter: {project_filter}, incremental: {incremental}, batch_size: {batch_size}, batch_number: {batch_number}")
         
-        print("--- Asana to BigQuery sync finished successfully ---")
-        return "OK", 200
-
+        # Asanaクライアントを取得
+        api_client, projects_api, tasks_api = asana.get_asana_client()
+        
+        # プロジェクト一覧を取得
+        if project_filter:
+            # 特定のプロジェクトのみ処理
+            all_projects = asana.get_all_projects(api_client)
+            projects = [p for p in all_projects if project_filter in p['name']]
+            print(f"Filtered to {len(projects)} projects matching '{project_filter}'")
+        else:
+            # 全プロジェクト処理
+            projects = asana.get_all_projects(api_client)
+            print(f"Processing all {len(projects)} projects")
+        
+        # バッチ処理
+        if batch_size > 0:
+            start_idx = batch_number * batch_size
+            end_idx = start_idx + batch_size
+            projects = projects[start_idx:end_idx]
+            print(f"Processing batch {batch_number}: projects {start_idx+1}-{min(end_idx, len(projects))}")
+        
+        # 差分取得の場合、最後の更新時刻を取得
+        last_update = None
+        if incremental:
+            try:
+                from google.cloud import bigquery
+                client = bigquery.Client()
+                query = """
+                SELECT MAX(inserted_at) as last_update 
+                FROM `asana-analytics-hub.asana_analytics.completed_tasks`
+                """
+                result = client.query(query).result()
+                for row in result:
+                    last_update = row.last_update
+                    print(f"Last update: {last_update}")
+            except Exception as e:
+                print(f"Error getting last update: {e}")
+                incremental = False
+        
+        # タスクを取得
+        all_tasks = []
+        for i, project in enumerate(projects):
+            print(f"Processing project {i+1}/{len(projects)}: {project['name']}")
+            
+            # 差分取得の場合、プロジェクトの最終更新をチェック
+            if incremental and last_update:
+                # プロジェクトの最終更新時刻をチェック（簡易版）
+                project_tasks = asana.get_completed_tasks_for_project(api_client, project)
+                if project_tasks:
+                    latest_task = max(task.get('completed_at', '') for task in project_tasks)
+                    if latest_task <= last_update:
+                        print(f"Skipping {project['name']} - no updates since {last_update}")
+                        continue
+            
+            tasks = asana.get_completed_tasks_for_project(api_client, project)
+            all_tasks.extend(tasks)
+            
+            # 進捗表示
+            if (i + 1) % 5 == 0:
+                print(f"Progress: {i+1}/{len(projects)} projects processed")
+        
+        print(f"Total tasks collected: {len(all_tasks)}")
+        
+        # BigQueryに保存
+        if all_tasks:
+            bigquery.insert_tasks(bigquery.get_client(), all_tasks)
+            print(f"Successfully saved {len(all_tasks)} tasks to BigQuery")
+        else:
+            print("No tasks to save")
+        
+        return {
+            'status': 'success', 
+            'tasks_processed': len(all_tasks),
+            'batch_number': batch_number,
+            'batch_size': batch_size,
+            'total_projects': len(projects)
+        }
+        
     except Exception as e:
-        print(f"An error occurred in fetch_asana_tasks_to_bq: {e}")
-        # エラーをログに出力するために、スタックトレースも表示するとデバッグしやすい
-        import traceback
-        traceback.print_exc()
-        return "Error", 500
+        print(f"Error in fetch_asana_tasks_to_bq: {e}")
+        return {'status': 'error', 'message': str(e)}
 
 @functions_framework.http
 def export_reports_to_sheets(request: Request):

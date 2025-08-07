@@ -16,7 +16,7 @@ def get_bigquery_client() -> bigquery.Client:
         return bigquery.Client(project=config.GCP_PROJECT_ID)
 
 def ensure_table_exists(client: bigquery.Client):
-    """completed_tasksテーブルが存在しない場合に作成する"""
+    """completed_tasksテーブルが存在しない場合に作成する、または既存テーブルにカラムを追加する"""
     dataset_ref = client.dataset(config.BQ_DATASET_ID)
     try:
         client.get_dataset(dataset_ref)
@@ -29,9 +29,36 @@ def ensure_table_exists(client: bigquery.Client):
         print(f"Dataset '{config.BQ_DATASET_ID}' created.")
 
     table_ref = dataset_ref.table(config.BQ_TABLE_ID)
+    table_exists = False
     try:
-        client.get_table(table_ref)
+        existing_table = client.get_table(table_ref)
         print(f"Table '{config.BQ_TABLE_FQN}' already exists.")
+        table_exists = True
+        
+        # 既存のカラムを確認
+        existing_columns = {field.name for field in existing_table.schema}
+        
+        # 新しいカラムが存在しない場合は追加
+        if 'is_subtask' not in existing_columns or 'parent_task_id' not in existing_columns:
+            print("Adding missing columns to existing table...")
+            
+            # ALTER TABLE文でカラムを追加
+            if 'is_subtask' not in existing_columns:
+                alter_query = f"""
+                ALTER TABLE `{config.BQ_TABLE_FQN}`
+                ADD COLUMN IF NOT EXISTS is_subtask BOOLEAN
+                """
+                client.query(alter_query).result()
+                print("Added column: is_subtask")
+            
+            if 'parent_task_id' not in existing_columns:
+                alter_query = f"""
+                ALTER TABLE `{config.BQ_TABLE_FQN}`
+                ADD COLUMN IF NOT EXISTS parent_task_id STRING
+                """
+                client.query(alter_query).result()
+                print("Added column: parent_task_id")
+                
     except NotFound:
         print(f"Table '{config.BQ_TABLE_FQN}' not found. Creating...")
         schema = [
@@ -48,6 +75,8 @@ def ensure_table_exists(client: bigquery.Client):
             bigquery.SchemaField("estimated_time", "FLOAT"),
             bigquery.SchemaField("actual_time", "FLOAT"),
             bigquery.SchemaField("actual_time_raw", "FLOAT"),
+            bigquery.SchemaField("is_subtask", "BOOLEAN"),
+            bigquery.SchemaField("parent_task_id", "STRING"),
         ]
         table = bigquery.Table(table_ref, schema=schema)
         client.create_table(table)
@@ -62,7 +91,7 @@ def insert_tasks(client: bigquery.Client, tasks: List[Dict[str, Any]]):
     # MERGE文を使い、存在すればUPDATE、存在しなければINSERTする
     # これにより、重複を避けつつ、タスク情報が更新された場合に対応できる
     query = f"""
-    MERGE `{config.BQ_TABLE_FQN}` AS T
+    MERGE `{config.BQ_TABLE_FQN}` AS target
     USING (
         SELECT
             CAST(task_id AS STRING) as task_id,
@@ -76,32 +105,39 @@ def insert_tasks(client: bigquery.Client, tasks: List[Dict[str, Any]]):
             CAST(modified_at AS TIMESTAMP) as modified_at,
             CAST(estimated_time AS FLOAT64) as estimated_time,
             CAST(actual_time AS FLOAT64) as actual_time,
-            CAST(actual_time_raw AS FLOAT64) as actual_time_raw
+            CAST(actual_time_raw AS FLOAT64) as actual_time_raw,
+            CAST(is_subtask AS BOOLEAN) as is_subtask,
+            CAST(parent_task_id AS STRING) as parent_task_id
         FROM UNNEST(@json_records)
-    ) AS S
-    ON T.task_id = S.task_id
+    ) AS source
+    ON target.task_id = source.task_id
     WHEN MATCHED THEN
         UPDATE SET
-            task_name = S.task_name,
-            project_name = S.project_name,
-            assignee_name = S.assignee_name,
-            completed_at = S.completed_at,
-            due_on = S.due_on,
-            modified_at = S.modified_at,
-            estimated_time = S.estimated_time,
-            actual_time = S.actual_time,
-            actual_time_raw = S.actual_time_raw,
+            task_name = source.task_name,
+            project_id = source.project_id,
+            project_name = source.project_name,
+            assignee_name = source.assignee_name,
+            completed_at = source.completed_at,
+            due_on = source.due_on,
+            modified_at = source.modified_at,
+            estimated_time = source.estimated_time,
+            actual_time = source.actual_time,
+            actual_time_raw = source.actual_time_raw,
+            is_subtask = source.is_subtask,
+            parent_task_id = source.parent_task_id,
             inserted_at = CURRENT_TIMESTAMP()
     WHEN NOT MATCHED THEN
         INSERT (
             task_id, task_name, project_id, project_name, assignee_name,
             completed_at, created_at, due_on, modified_at, inserted_at,
-            estimated_time, actual_time, actual_time_raw
+            estimated_time, actual_time, actual_time_raw,
+            is_subtask, parent_task_id
         )
         VALUES (
-            S.task_id, S.task_name, S.project_id, S.project_name, S.assignee_name,
-            S.completed_at, S.created_at, S.due_on, S.modified_at, CURRENT_TIMESTAMP(),
-            S.estimated_time, S.actual_time, S.actual_time_raw
+            source.task_id, source.task_name, source.project_id, source.project_name, source.assignee_name,
+            source.completed_at, source.created_at, source.due_on, source.modified_at, CURRENT_TIMESTAMP(),
+            source.estimated_time, source.actual_time, source.actual_time_raw,
+            source.is_subtask, source.parent_task_id
         )
     """
 

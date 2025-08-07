@@ -4,14 +4,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is an Asana Analytics Hub that fetches completed task data from Asana, stores it in BigQuery, and exports aggregated reports to Google Sheets. The system runs on Google Cloud Functions with Cloud Scheduler for automation.
+This is an Asana Analytics Hub that fetches completed task data from Asana, stores it in BigQuery, and exports aggregated reports to Google Sheets. The system runs on Google Cloud Functions (Gen2) with Cloud Scheduler for automation.
 
 ## Common Commands
 
 ### Local Development
 
 ```bash
-# Activate virtual environment
+# Create and activate virtual environment
+python3 -m venv venv
 source venv/bin/activate
 
 # Install dependencies
@@ -22,36 +23,60 @@ PYTHONPATH=. python3 asana_reporter/main.py fetch
 
 # Run Google Sheets export locally
 PYTHONPATH=. python3 asana_reporter/main.py export
+
+# Run utility tools
+PYTHONPATH=. python3 tools/list_projects.py      # List all Asana projects
+PYTHONPATH=. python3 tools/check_bigquery.py     # Check BigQuery table status
 ```
 
 ### Deployment Commands
 
 ```bash
-# Deploy fetch-asana-tasks function
+# Deploy fetch-asana-tasks function (Gen2)
 gcloud functions deploy fetch-asana-tasks \
-  --project=<GCP_PROJECT_ID> \
+  --project=asana-analytics-hub \
   --region=asia-northeast1 \
   --runtime=python311 \
-  --source=./asana_reporter \
+  --source=. \
   --entry-point=fetch_asana_tasks_to_bq \
   --trigger-http \
   --allow-unauthenticated \
   --env-vars-file=env.yaml \
   --set-secrets=ASANA_ACCESS_TOKEN=asana-access-token:latest \
-  --timeout=540s
+  --timeout=540s \
+  --gen2
 
-# Deploy export-to-sheets function
+# Deploy export-to-sheets function (Gen2)
 gcloud functions deploy export-to-sheets \
-  --project=<GCP_PROJECT_ID> \
+  --project=asana-analytics-hub \
   --region=asia-northeast1 \
   --runtime=python311 \
-  --source=./asana_reporter \
+  --source=. \
   --entry-point=export_reports_to_sheets \
   --trigger-http \
   --allow-unauthenticated \
   --env-vars-file=env.yaml \
   --set-secrets=ASANA_ACCESS_TOKEN=asana-access-token:latest \
-  --timeout=540s
+  --timeout=540s \
+  --gen2
+
+# Alternative: Use the deployment script
+bash deploy_functions.sh
+```
+
+### Cloud Scheduler Management
+
+```bash
+# Check scheduler jobs status
+gcloud scheduler jobs list --location=asia-northeast1 --project=asana-analytics-hub
+
+# Manually trigger jobs
+gcloud scheduler jobs run fetch-asana-tasks-daily --location=asia-northeast1 --project=asana-analytics-hub
+gcloud scheduler jobs run export-to-sheets-daily --location=asia-northeast1 --project=asana-analytics-hub
+
+# View function logs
+gcloud functions logs read fetch-asana-tasks --region=asia-northeast1 --project=asana-analytics-hub --limit=50
+gcloud functions logs read export-to-sheets --region=asia-northeast1 --project=asana-analytics-hub --limit=50
 ```
 
 ## Architecture
@@ -99,14 +124,19 @@ The codebase follows a modular architecture with clear separation of concerns:
 
 ## Environment Configuration
 
-Required environment variables (set in `.env` for local development):
-- `ASANA_ACCESS_TOKEN`: Asana Personal Access Token
-- `ASANA_WORKSPACE_ID`: Target Asana workspace
-- `GCP_PROJECT_ID`: Google Cloud project ID
-- `GCP_CREDENTIALS_PATH`: Path to service account JSON (local only)
-- `SPREADSHEET_ID`: Target Google Sheets ID
+### Local Development Setup
+1. Copy `.env.example` to `.env`
+2. Set required environment variables:
+   - `ASANA_ACCESS_TOKEN`: Asana Personal Access Token
+   - `ASANA_WORKSPACE_ID`: Target Asana workspace (currently: 1204726422682207)
+   - `GCP_PROJECT_ID`: Google Cloud project ID (currently: asana-analytics-hub)
+   - `GCP_CREDENTIALS_PATH`: Path to service account JSON (e.g., credentials/service-account-key.json)
+   - `SPREADSHEET_ID`: Target Google Sheets ID (currently: 1JpL-_kDN0X2GZYBnvVRqCuLUmHFKBYnTAbIXAuqilXQ)
 
-For deployment, use `env.yaml` (excludes sensitive tokens) and Secret Manager for `ASANA_ACCESS_TOKEN`.
+### Production Configuration
+- `env.yaml`: Contains non-sensitive config (GCP_PROJECT_ID, ASANA_WORKSPACE_ID, SPREADSHEET_ID)
+- Secret Manager: Stores `ASANA_ACCESS_TOKEN` securely
+- Cloud Functions use `--gen2` flag for Gen2 runtime environment
 
 ## BigQuery Schema
 
@@ -115,3 +145,22 @@ Table: `asana_analytics.completed_tasks`
 - Time tracking: `estimated_time`, `actual_time`, `actual_time_raw` (FLOAT)
 - Metadata: `project_name`, `assignee_name`, `completed_at`, etc.
 - Audit: `inserted_at` (auto-populated on insert/update)
+
+## Troubleshooting
+
+### Common Issues
+- **Authentication errors**: Ensure service account has proper BigQuery and Sheets permissions
+- **Rate limiting**: Built-in retry logic handles API rate limits automatically
+- **Missing custom fields**: System handles both `actual_time_raw` and Japanese field names (`時間達成率`)
+
+### Debugging Commands
+```bash
+# Test Asana connection
+PYTHONPATH=. python3 -c "from asana_reporter import asana; api_client, _, _ = asana.get_asana_client(); projects = asana.get_all_projects(api_client); print(f'Found {len(projects)} projects')"
+
+# Check BigQuery table
+PYTHONPATH=. python3 tools/check_bigquery.py
+
+# View Cloud Function errors
+gcloud logging read "resource.type=cloud_function AND severity>=ERROR" --limit=10 --project=asana-analytics-hub
+```
