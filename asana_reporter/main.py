@@ -1,6 +1,7 @@
 import sys
 import time
 from typing import List, Dict, Any
+from datetime import datetime, timezone
 import functions_framework
 from flask import Request
 
@@ -68,8 +69,8 @@ def fetch_asana_tasks_to_bq(request):
         last_update = None
         if incremental:
             try:
-                from google.cloud import bigquery
-                client = bigquery.Client()
+                from google.cloud import bigquery as gcp_bigquery
+                client = gcp_bigquery.Client()
                 query = """
                 SELECT MAX(inserted_at) as last_update 
                 FROM `asana-analytics-hub.asana_analytics.completed_tasks`
@@ -92,10 +93,25 @@ def fetch_asana_tasks_to_bq(request):
                 # プロジェクトの最終更新時刻をチェック（簡易版）
                 project_tasks = asana.get_completed_tasks_for_project(api_client, project)
                 if project_tasks:
-                    latest_task = max(task.get('completed_at', '') for task in project_tasks)
-                    if latest_task <= last_update:
-                        print(f"Skipping {project['name']} - no updates since {last_update}")
-                        continue
+                    def _to_dt(s: str):
+                        if not s:
+                            return None
+                        try:
+                            # Asanaの日時はISO 8601 (例: 2024-06-01T12:34:56.789Z)
+                            if s.endswith('Z'):
+                                s = s[:-1] + '+00:00'
+                            return datetime.fromisoformat(s)
+                        except Exception:
+                            return None
+                    completed_times = [
+                        _to_dt(task.get('completed_at')) for task in project_tasks
+                    ]
+                    completed_times = [dt for dt in completed_times if dt is not None]
+                    if completed_times:
+                        latest_task_dt = max(completed_times)
+                        if latest_task_dt <= last_update:
+                            print(f"Skipping {project['name']} - no updates since {last_update}")
+                            continue
             
             tasks = asana.get_completed_tasks_for_project(api_client, project)
             all_tasks.extend(tasks)
@@ -108,7 +124,9 @@ def fetch_asana_tasks_to_bq(request):
         
         # BigQueryに保存
         if all_tasks:
-            bigquery.insert_tasks(bigquery.get_client(), all_tasks)
+            bq_client = bigquery.get_bigquery_client()
+            bigquery.ensure_table_exists(bq_client)
+            bigquery.insert_tasks(bq_client, all_tasks)
             print(f"Successfully saved {len(all_tasks)} tasks to BigQuery")
         else:
             print("No tasks to save")

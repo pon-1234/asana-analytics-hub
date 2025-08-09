@@ -2,6 +2,7 @@ from google.cloud import bigquery
 from google.oauth2 import service_account
 from google.api_core.exceptions import NotFound
 from typing import List, Dict, Any, Iterator
+from datetime import datetime, timezone
 
 from . import config
 
@@ -83,78 +84,42 @@ def ensure_table_exists(client: bigquery.Client):
         print(f"Table '{config.BQ_TABLE_FQN}' created.")
 
 def insert_tasks(client: bigquery.Client, tasks: List[Dict[str, Any]]):
-    """タスクデータをBigQueryに挿入する。重複はtask_idに基づいてマージ（更新）する。"""
+    """タスクデータをBigQueryに挿入する。重複はtask_idでDELETE後にバルクINSERTする。"""
     if not tasks:
         print("No new tasks to insert.")
         return
 
-    # MERGE文を使い、存在すればUPDATE、存在しなければINSERTする
-    # これにより、重複を避けつつ、タスク情報が更新された場合に対応できる
-    query = f"""
-    MERGE `{config.BQ_TABLE_FQN}` AS target
-    USING (
-        SELECT
-            CAST(task_id AS STRING) as task_id,
-            CAST(task_name AS STRING) as task_name,
-            CAST(project_id AS STRING) as project_id,
-            CAST(project_name AS STRING) as project_name,
-            CAST(assignee_name AS STRING) as assignee_name,
-            CAST(completed_at AS TIMESTAMP) as completed_at,
-            CAST(created_at AS TIMESTAMP) as created_at,
-            CAST(due_on AS DATE) as due_on,
-            CAST(modified_at AS TIMESTAMP) as modified_at,
-            CAST(estimated_time AS FLOAT64) as estimated_time,
-            CAST(actual_time AS FLOAT64) as actual_time,
-            CAST(actual_time_raw AS FLOAT64) as actual_time_raw,
-            CAST(is_subtask AS BOOLEAN) as is_subtask,
-            CAST(parent_task_id AS STRING) as parent_task_id
-        FROM UNNEST(@json_records)
-    ) AS source
-    ON target.task_id = source.task_id
-    WHEN MATCHED THEN
-        UPDATE SET
-            task_name = source.task_name,
-            project_id = source.project_id,
-            project_name = source.project_name,
-            assignee_name = source.assignee_name,
-            completed_at = source.completed_at,
-            due_on = source.due_on,
-            modified_at = source.modified_at,
-            estimated_time = source.estimated_time,
-            actual_time = source.actual_time,
-            actual_time_raw = source.actual_time_raw,
-            is_subtask = source.is_subtask,
-            parent_task_id = source.parent_task_id,
-            inserted_at = CURRENT_TIMESTAMP()
-    WHEN NOT MATCHED THEN
-        INSERT (
-            task_id, task_name, project_id, project_name, assignee_name,
-            completed_at, created_at, due_on, modified_at, inserted_at,
-            estimated_time, actual_time, actual_time_raw,
-            is_subtask, parent_task_id
+    # 1) 事前に既存の同一 task_id を削除（UPSERT代替）
+    task_ids = [str(t.get("task_id")) for t in tasks if t.get("task_id")]
+    if task_ids:
+        delete_query = f"""
+        DELETE FROM `{config.BQ_TABLE_FQN}`
+        WHERE task_id IN UNNEST(@ids)
+        """
+        delete_job = client.query(
+            delete_query,
+            job_config=bigquery.QueryJobConfig(
+                query_parameters=[bigquery.ArrayQueryParameter("ids", "STRING", task_ids)]
+            ),
         )
-        VALUES (
-            source.task_id, source.task_name, source.project_id, source.project_name, source.assignee_name,
-            source.completed_at, source.created_at, source.due_on, source.modified_at, CURRENT_TIMESTAMP(),
-            source.estimated_time, source.actual_time, source.actual_time_raw,
-            source.is_subtask, source.parent_task_id
-        )
-    """
+        delete_job.result()
+        print(f"Deleted existing rows for {len(task_ids)} task_ids.")
 
-    job_config = bigquery.QueryJobConfig(
-        query_parameters=[
-            bigquery.ArrayQueryParameter("json_records", "JSON", tasks)
-        ]
-    )
+    # 2) 行に inserted_at を付与し、JSONストリーミング挿入
+    now_ts = datetime.now(timezone.utc).isoformat()
+    rows_to_insert: List[Dict[str, Any]] = []
+    for t in tasks:
+        row = dict(t)
+        row["inserted_at"] = now_ts
+        rows_to_insert.append(row)
 
-    print(f"Merging {len(tasks)} tasks into BigQuery...")
-    try:
-        query_job = client.query(query, job_config=job_config)
-        query_job.result()  # Wait for the job to complete
-        print(f"Successfully merged {query_job.num_dml_affected_rows} rows.")
-    except Exception as e:
-        print(f"An error occurred during BigQuery merge: {e}")
-        raise
+    table_ref = client.dataset(config.BQ_DATASET_ID).table(config.BQ_TABLE_ID)
+    errors = client.insert_rows_json(table=table_ref, json_rows=rows_to_insert, ignore_unknown_values=True)
+    if errors:
+        print(f"Errors during insert_rows_json: {errors}")
+        # 代表的なエラーだけ例外化
+        raise RuntimeError(str(errors))
+    print(f"Inserted {len(rows_to_insert)} rows into {config.BQ_TABLE_FQN}.")
 
 def get_report_data(client: bigquery.Client) -> Dict[str, Iterator[Dict[str, Any]]]:
     """BigQueryからレポート用の集計データを取得する"""
