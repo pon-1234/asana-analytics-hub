@@ -17,11 +17,10 @@ def get_bigquery_client() -> bigquery.Client:
         return bigquery.Client(project=config.GCP_PROJECT_ID)
 
 def ensure_table_exists(client: bigquery.Client):
-    """completed_tasksテーブルが存在しない場合に作成する、または既存テーブルにカラムを追加する"""
+    """completed_tasksテーブルが存在しない場合に作成、または既存テーブルにカラムを追加"""
     dataset_ref = client.dataset(config.BQ_DATASET_ID)
     try:
         client.get_dataset(dataset_ref)
-        print(f"Dataset '{config.BQ_DATASET_ID}' already exists.")
     except NotFound:
         print(f"Dataset '{config.BQ_DATASET_ID}' not found. Creating...")
         dataset = bigquery.Dataset(dataset_ref)
@@ -30,36 +29,23 @@ def ensure_table_exists(client: bigquery.Client):
         print(f"Dataset '{config.BQ_DATASET_ID}' created.")
 
     table_ref = dataset_ref.table(config.BQ_TABLE_ID)
-    table_exists = False
     try:
         existing_table = client.get_table(table_ref)
         print(f"Table '{config.BQ_TABLE_FQN}' already exists.")
-        table_exists = True
         
-        # 既存のカラムを確認
         existing_columns = {field.name for field in existing_table.schema}
         
-        # 新しいカラムが存在しない場合は追加
-        if 'is_subtask' not in existing_columns or 'parent_task_id' not in existing_columns:
-            print("Adding missing columns to existing table...")
+        # is_subtask と parent_task_id カラムがなければ追加 (既存のロジック)
+        if 'is_subtask' not in existing_columns:
+            alter_query = f"ALTER TABLE `{config.BQ_TABLE_FQN}` ADD COLUMN IF NOT EXISTS is_subtask BOOLEAN"
+            client.query(alter_query).result()
+            print("Added column: is_subtask")
+        
+        if 'parent_task_id' not in existing_columns:
+            alter_query = f"ALTER TABLE `{config.BQ_TABLE_FQN}` ADD COLUMN IF NOT EXISTS parent_task_id STRING"
+            client.query(alter_query).result()
+            print("Added column: parent_task_id")
             
-            # ALTER TABLE文でカラムを追加
-            if 'is_subtask' not in existing_columns:
-                alter_query = f"""
-                ALTER TABLE `{config.BQ_TABLE_FQN}`
-                ADD COLUMN IF NOT EXISTS is_subtask BOOLEAN
-                """
-                client.query(alter_query).result()
-                print("Added column: is_subtask")
-            
-            if 'parent_task_id' not in existing_columns:
-                alter_query = f"""
-                ALTER TABLE `{config.BQ_TABLE_FQN}`
-                ADD COLUMN IF NOT EXISTS parent_task_id STRING
-                """
-                client.query(alter_query).result()
-                print("Added column: parent_task_id")
-                
     except NotFound:
         print(f"Table '{config.BQ_TABLE_FQN}' not found. Creating...")
         schema = [
@@ -80,8 +66,16 @@ def ensure_table_exists(client: bigquery.Client):
             bigquery.SchemaField("parent_task_id", "STRING"),
         ]
         table = bigquery.Table(table_ref, schema=schema)
+        
+        # ★改善点: パフォーマンス向上のためパーティショニングとクラスタリングを設定
+        table.time_partitioning = bigquery.TimePartitioning(
+            type_=bigquery.TimePartitioningType.MONTH,
+            field="completed_at",
+        )
+        table.clustering_fields = ["project_name", "assignee_name"]
+        
         client.create_table(table)
-        print(f"Table '{config.BQ_TABLE_FQN}' created.")
+        print(f"Table '{config.BQ_TABLE_FQN}' created with partitioning and clustering.")
 
 def insert_tasks(client: bigquery.Client, tasks: List[Dict[str, Any]]):
     """タスクデータをBigQueryに挿入する。重複はtask_idでDELETE後にバルクINSERTする。"""
@@ -129,14 +123,20 @@ def get_report_data(client: bigquery.Client) -> Dict[str, Iterator[Dict[str, Any
     """BigQueryからレポート用の集計データを取得する"""
     print("Querying BigQuery for report data...")
 
-    # CTEを一度だけ定義し、3つの集計クエリで再利用する
+    # ★修正点: `SELECT *` をやめ、必要なカラムを明示的に指定してエラーを回避
     base_query = f"""
     WITH unique_tasks AS (
-      -- 各タスクについて、最も新しいレコードを1つだけ選ぶ
       SELECT * EXCEPT(row_num)
       FROM (
         SELECT
-          *,
+          task_id,
+          project_name,
+          assignee_name,
+          completed_at,
+          actual_time,
+          estimated_time,
+          modified_at,
+          inserted_at,
           ROW_NUMBER() OVER(PARTITION BY task_id ORDER BY modified_at DESC, inserted_at DESC) as row_num
         FROM `{config.BQ_TABLE_FQN}`
         WHERE completed_at IS NOT NULL
