@@ -96,14 +96,18 @@ def insert_tasks(client: bigquery.Client, tasks: List[Dict[str, Any]]):
         DELETE FROM `{config.BQ_TABLE_FQN}`
         WHERE task_id IN UNNEST(@ids)
         """
-        delete_job = client.query(
-            delete_query,
-            job_config=bigquery.QueryJobConfig(
-                query_parameters=[bigquery.ArrayQueryParameter("ids", "STRING", task_ids)]
-            ),
-        )
-        delete_job.result()
-        print(f"Deleted existing rows for {len(task_ids)} task_ids.")
+        try:
+            delete_job = client.query(
+                delete_query,
+                job_config=bigquery.QueryJobConfig(
+                    query_parameters=[bigquery.ArrayQueryParameter("ids", "STRING", task_ids)]
+                ),
+            )
+            delete_job.result()
+            print(f"Deleted existing rows for {len(task_ids)} task_ids.")
+        except Exception as e:
+            # Streaming buffer での削除禁止などはスキップして append-only で継続
+            print(f"Skip delete due to error: {e}. Proceeding with insert-only (queries dedupe by task_id).")
 
     # 2) 行に inserted_at を付与し、JSONストリーミング挿入
     now_ts = datetime.now(timezone.utc).isoformat()

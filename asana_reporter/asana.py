@@ -63,53 +63,92 @@ def _parse_custom_fields(custom_fields: List[Dict[str, Any]]) -> Dict[str, Any]:
     for field in custom_fields:
         original_name = field.get('name', '')
         field_name = original_name.lower()
-        field_value = field.get('value')
+        # Asana API returns custom field values sometimes at top-level (number_value/text_value)
+        # and sometimes nested under `value`. Support both.
+        field_value = field.get('value') or {}
+        number_value = field.get('number_value')
+        if number_value is None and isinstance(field_value, dict):
+            number_value = field_value.get('number_value')
+        text_value = field.get('text_value')
+        if text_value is None and isinstance(field_value, dict):
+            text_value = field_value.get('text_value')
+        display_value = field.get('display_value')
+        enum_value = field.get('enum_value')
+        if enum_value is None and isinstance(field_value, dict):
+            enum_value = field_value.get('enum_value')
+        enum_name = None
+        if isinstance(enum_value, dict):
+            enum_name = enum_value.get('name')
         
-        # 見積もり時間の取得
-        if field_name in ['estimated time', 'estimated_time', '見積時間', '見積もり時間', 'estimate']:
-            if field_value and field_value.get('number_value') is not None:
-                estimated_time = field_value['number_value']
+        # 見積もり/予定時間の取得（部分一致も許容）
+        if (
+            field_name in ['estimated time', 'estimated_time', '見積時間', '見積もり時間', 'estimate', '予定時間']
+            or ('予定' in field_name and '時間' in field_name)
+            or ('estimate' in field_name and 'time' in field_name)
+        ):
+            if number_value is not None:
+                estimated_time = number_value
+            else:
+                candidate = text_value or display_value or enum_name
+                if candidate:
+                    s = str(candidate).strip()
+                    # 例: "30", "30分", "0.5h", "1.25 時間"
+                    import re
+                    m = re.search(r"([0-9]+(?:\.[0-9]+)?)", s)
+                    if m:
+                        val = float(m.group(1))
+                        if '分' in s:
+                            estimated_time = val
+                        elif 'h' in s.lower() or '時間' in s:
+                            estimated_time = val * 60
+                        else:
+                            # 単位不明: 分とみなす（従来互換）
+                            estimated_time = val
         
         # 実績時間の取得
         elif field_name in ['actual_time_raw', 'actual time raw']:
-            if field_value and field_value.get('number_value') is not None:
-                actual_time_raw = field_value['number_value']
+            if number_value is not None:
+                actual_time_raw = number_value
                 print(f"  Found actual_time_raw: {actual_time_raw} (minutes) = {actual_time_raw / 60} (hours)")
         elif field_name in ['actual time', 'actual_time', '実績時間']:
             # 時間単位の実績が入力されているケースをサポート（hours想定）
-            if field_value and field_value.get('number_value') is not None:
-                hours_value = field_value['number_value']
+            if number_value is not None:
+                hours_value = number_value
                 actual_time_raw = hours_value * 60
                 print(f"  Found actual_time (hours): {hours_value} -> {actual_time_raw} (minutes)")
         
         # 時間達成率の取得
-        elif field_name in ['時間達成率', 'achievement_rate']:
-            if field_value:
-                if field_value.get('number_value') is not None:
-                    achievement_rate = field_value['number_value']
-                elif field_value.get('text_value'):
+        elif field_name in ['時間達成率', 'achievement_rate'] or ('達成率' in field_name):
+            # 支持: number_value, text_value, display_value("120%"など)
+            if number_value is not None:
+                achievement_rate = number_value
+            else:
+                candidate = text_value or display_value or enum_name
+                if candidate:
                     try:
-                        text_val = str(field_value['text_value']).strip()
-                        # 例: "120%" を 1.2 に変換
+                        text_val = str(candidate).strip()
                         if text_val.endswith('%'):
                             achievement_rate = float(text_val.rstrip('%')) / 100.0
                         else:
                             achievement_rate = float(text_val)
                     except (ValueError, TypeError):
                         pass
-                achievement_rate_field_name = original_name
-                print(f"  Found achievement_rate (exact match): {achievement_rate}")
+            achievement_rate_field_name = original_name
+            print(f"  Found achievement_rate (exact match): {achievement_rate}")
     
     # 時間達成率から実績時間を計算
     if achievement_rate is not None and estimated_time is not None and actual_time_raw is None:
         # 一般的に「達成率」= 実績/見積。比率(0〜1) または パーセント(0〜100) の両方に対応
         rate = achievement_rate
-        if rate > 1.0:
-            # 100 を 1.0 に正規化（1000%以上の異常値はそのまま扱う）
-            if rate <= 1000:
-                rate = rate / 100.0
+        # 数値の達成率の解釈:
+        # - 0 < rate <= 10: 比率(例: 1.2=120%)として扱う
+        # - 10 < rate <= 1000: パーセント(例: 75=75%)として扱い 100 で割る
+        if 10.0 < rate <= 1000.0:
+            rate = rate / 100.0
         if rate > 0:
-            actual_time_raw = estimated_time * rate
+            # ユーザー定義: 時間達成率 = 予定時間 / 実績時間
+            # よって 実績時間 = 予定時間 / 時間達成率
+            actual_time_raw = estimated_time / rate
             actual_time = actual_time_raw / 60
             print(f"  Calculated actual_time from achievement_rate '{achievement_rate_field_name}': {actual_time_raw} (minutes) = {actual_time} (hours)")
         else:
@@ -139,7 +178,7 @@ def get_subtasks(tasks_api: asana.TasksApi, parent_task_id: str) -> List[Dict[st
             tasks_api.get_subtasks_for_task,
             parent_task_id,
             opts={
-                'opt_fields': 'name,completed,completed_at,created_at,modified_at,due_on,assignee.name,custom_fields'
+                'opt_fields': 'name,completed,completed_at,created_at,modified_at,due_on,assignee.name,custom_fields.name,custom_fields.display_value,custom_fields.text_value,custom_fields.number_value,custom_fields.enum_value'
             }
         )
         return list(subtasks)
@@ -160,7 +199,7 @@ def get_completed_tasks_for_project(api_client: asana.ApiClient, project: Dict[s
         tasks_api.get_tasks_for_project,
         project_id,
         opts={
-            'opt_fields': 'name,gid,completed,completed_at,created_at,due_on,modified_at,assignee.name,custom_fields,num_subtasks',
+            'opt_fields': 'name,gid,completed,completed_at,created_at,due_on,modified_at,assignee.name,custom_fields.name,custom_fields.display_value,custom_fields.text_value,custom_fields.number_value,custom_fields.enum_value,num_subtasks',
             'completed_since': '2024-01-01'
         }
     )

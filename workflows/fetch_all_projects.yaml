@@ -1,0 +1,61 @@
+# Cloud Workflows definition to iterate all projects in batches
+# Triggers fetch-asana-tasks HTTP function repeatedly until last batch
+main:
+  params: [base_url, batch_size]
+  steps:
+    - init:
+        assign:
+          - i: 0
+    - loop:
+        try:
+          steps:
+            - call_fetch:
+                call: http.post
+                args:
+                  url: ${base_url}
+                  headers:
+                    Content-Type: application/json
+                  body:
+                    incremental: false
+                    batch_size: ${batch_size}
+                    batch_number: ${i}
+                  timeout: 540s
+            - parse:
+                assign:
+                  - total_projects: ${default(call_fetch.body.total_projects, 0)}
+            - log:
+                call: sys.log
+                args:
+                  text: ${"batch=" + string(i) + ", total_projects=" + string(total_projects)}
+                  severity: INFO
+            - check_last:
+                switch:
+                  - condition: ${total_projects < batch_size}
+                    next: done
+            - inc:
+                assign:
+                  - i: ${i + 1}
+            - wait:
+                call: sys.sleep
+                args:
+                  seconds: 2
+            - next:
+                next: loop
+        except:
+          as: e
+          steps:
+            - log_error:
+                call: sys.log
+                args:
+                  text: ${"error on batch=" + string(i) + ": " + e.message}
+                  severity: ERROR
+            - wait_retry:
+                call: sys.sleep
+                args:
+                  seconds: 5
+            - next_after_error:
+                next: loop
+    - done:
+        return:
+          status: success
+          batches_run: ${i + 1}
