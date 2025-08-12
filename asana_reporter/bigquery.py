@@ -148,7 +148,7 @@ def get_report_data(client: bigquery.Client) -> Dict[str, Iterator[Dict[str, Any
     # プロジェクト別集計
     project_query = base_query + """
     SELECT
-        FORMAT_TIMESTAMP("%Y-%m", completed_at) as month,
+        FORMAT_TIMESTAMP("%Y-%m", completed_at, "Asia/Tokyo") as month,
         project_name,
         COUNT(task_id) as tasks_count,
         SUM(IFNULL(actual_time, 0)) as total_actual_hours,
@@ -161,7 +161,7 @@ def get_report_data(client: bigquery.Client) -> Dict[str, Iterator[Dict[str, Any
     # 担当者別集計
     assignee_query = base_query + """
     SELECT
-        FORMAT_TIMESTAMP("%Y-%m", completed_at) as month,
+        FORMAT_TIMESTAMP("%Y-%m", completed_at, "Asia/Tokyo") as month,
         assignee_name,
         COUNT(task_id) as tasks_count,
         SUM(IFNULL(actual_time, 0)) as total_actual_hours,
@@ -175,7 +175,7 @@ def get_report_data(client: bigquery.Client) -> Dict[str, Iterator[Dict[str, Any
     # プロジェクト・担当者別集計
     project_assignee_query = base_query + """
     SELECT
-        FORMAT_TIMESTAMP("%Y-%m", completed_at) as month,
+        FORMAT_TIMESTAMP("%Y-%m", completed_at, "Asia/Tokyo") as month,
         project_name,
         assignee_name,
         COUNT(task_id) as tasks_count,
