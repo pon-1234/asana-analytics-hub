@@ -130,7 +130,7 @@ def get_report_data(client: bigquery.Client) -> Dict[str, Iterator[Dict[str, Any
       FROM (
         SELECT
           task_id,
-          project_name,
+          TRIM(project_name) AS project_name,
           assignee_name,
           completed_at,
           actual_time,

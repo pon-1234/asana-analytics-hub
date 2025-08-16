@@ -58,7 +58,7 @@ def main():
           task_id,
           task_name,
           parent_task_id,
-          project_name,
+          TRIM(project_name) AS project_name,
           assignee_name,
           completed_at,
           estimated_time,   -- minutes
@@ -93,7 +93,7 @@ def main():
       SUM(IFNULL(actual_time, 0.0)) AS total_actual_hours,
       SUM(IFNULL(estimated_time, 0.0)) AS total_estimated_minutes
     FROM unique_tasks
-    WHERE project_name = @project_name AND assignee_name = @assignee_name""" + extra_filter
+    WHERE TRIM(project_name) = @project_name AND assignee_name = @assignee_name""" + extra_filter
     
 
     # 対象月(YYYY-MM)に完了した分のみ（=「内 月」相当）
@@ -109,7 +109,7 @@ def main():
       SUM(IFNULL(actual_time, 0.0)) AS total_actual_hours,
       SUM(IFNULL(estimated_time, 0.0)) AS total_estimated_minutes
     FROM unique_tasks
-    WHERE project_name = @project_name
+    WHERE TRIM(project_name) = @project_name
       AND assignee_name = @assignee_name
       AND {month_filter}""" + extra_filter
     
@@ -160,7 +160,7 @@ def main():
           modified_at,
           FORMAT_TIMESTAMP('%Y-%m', modified_at, 'Asia/Tokyo') AS modified_month
         FROM unique_tasks
-        WHERE project_name = @project_name
+        WHERE TRIM(project_name) = @project_name
           AND assignee_name = @assignee_name
           {" AND (task_id IN UNNEST(@ids) OR parent_task_id IN UNNEST(@ids))" if ids_param else ""}
         ORDER BY completed_at NULLS LAST, modified_at NULLS LAST
