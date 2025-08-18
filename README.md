@@ -63,6 +63,10 @@ GCP_CREDENTIALS_PATH="<Path to your service-account-key.json>" # ローカル実
 
 # Google Sheets設定
 SPREADSHEET_ID="<Your Google Spreadsheet ID>"
+
+# Slack設定（任意：未設定なら通知はスキップ）
+SLACK_BOT_TOKEN="xoxb-..."            # Secret Manager 推奨
+SLACK_CHANNEL_ID="C0123456789"        # 投稿先チャンネルID
 ```
 
 **重要**: `.env`ファイルは`.gitignore`で管理対象外になっています。**絶対にGitにコミットしないでください。**
@@ -106,7 +110,7 @@ SPREADSHEET_ID: "<Your Google Spreadsheet ID>"
 
 ### 2. Cloud Functionsのデプロイ
 
-**ASANA_ACCESS_TOKENは、デプロイ時に`--set-secrets`フラグを使ってSecret Managerから安全に読み込みます。**
+**ASANA_ACCESS_TOKENやSLACK_BOT_TOKENは、デプロイ時に`--set-secrets`フラグを使ってSecret Managerから安全に読み込みます。**
 
 **事前準備: Secret ManagerにAsanaのトークンを保存**
 ```bash
@@ -122,13 +126,14 @@ gcloud functions deploy fetch-asana-tasks \
   --project=<Your GCP Project ID> \
   --region=asia-northeast1 \
   --runtime=python311 \
-  --source=./asana_reporter \
+  --source=. \
   --entry-point=fetch_asana_tasks_to_bq \
   --trigger-http \
   --allow-unauthenticated \
   --env-vars-file=env.yaml \
-  --set-secrets=ASANA_ACCESS_TOKEN=asana-access-token:latest \
-  --timeout=540s
+  --set-secrets=ASANA_ACCESS_TOKEN=asana-access-token:latest,SLACK_BOT_TOKEN=slack-bot-token:latest \
+  --timeout=540s \
+  --gen2
 ```
 
 **スプレッドシート出力用Function (`export-to-sheets`):**
@@ -138,13 +143,14 @@ gcloud functions deploy export-to-sheets \
   --project=<Your GCP Project ID> \
   --region=asia-northeast1 \
   --runtime=python311 \
-  --source=./asana_reporter \
+  --source=. \
   --entry-point=export_reports_to_sheets \
   --trigger-http \
   --allow-unauthenticated \
   --env-vars-file=env.yaml \
-  --set-secrets=ASANA_ACCESS_TOKEN=asana-access-token:latest \
-  --timeout=540s
+  --set-secrets=ASANA_ACCESS_TOKEN=asana-access-token:latest,SLACK_BOT_TOKEN=slack-bot-token:latest \
+  --timeout=540s \
+  --gen2
 ```
 
 ### 3. Cloud Schedulerの設定

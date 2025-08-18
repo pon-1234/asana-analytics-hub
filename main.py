@@ -8,6 +8,11 @@ from datetime import datetime, timezone
 # インポートパスを修正
 from asana_reporter import asana, bigquery, sheets, config
 from asana_reporter.asana import asana as asana_sdk # asana.rest.ApiException をキャッチするため
+from asana_reporter.slack_notifier import (
+    send_run_summary,
+    send_monthly_digest,
+    send_daily_digest,
+)
 
 def _get_last_modified_from_bq(client: bigquery.bigquery.Client) -> str | None:
     """BigQueryから最新のタスク更新時刻 (modified_at) を取得する"""
@@ -43,6 +48,7 @@ def fetch_asana_tasks_to_bq(request: Request):
     差分取得に対応し、タイムアウトを防ぎます。
     """
     print("--- Starting Asana to BigQuery sync (Incremental/Full selectable) ---")
+    started_at_iso = datetime.now(timezone.utc).isoformat()
     try:
         config.validate_config()
 
@@ -101,6 +107,19 @@ def fetch_asana_tasks_to_bq(request: Request):
             print("No new or updated tasks to save.")
 
         print("--- Asana to BigQuery sync finished successfully ---")
+        # Slack: health summary + daily digest (non-fatal)
+        try:
+            finished_at_iso = datetime.now(timezone.utc).isoformat()
+            send_run_summary(
+                tasks_processed=len(all_tasks),
+                started_at_iso=started_at_iso,
+                finished_at_iso=finished_at_iso,
+                errors=0,
+            )
+            # 日次ダイジェスト（昨日, JST）
+            send_daily_digest(bq_client)
+        except Exception as e:
+            print(f"Slack notifications skipped due to error: {e}")
         return {"status": "success", "tasks_processed": len(all_tasks)}, 200
 
     except Exception as e:
@@ -129,6 +148,11 @@ def export_reports_to_sheets(request: Request):
             time.sleep(5)
             
         print("--- BigQuery to Sheets export finished successfully ---")
+        # Slack: monthly digest (non-fatal)
+        try:
+            send_monthly_digest(bq_client)
+        except Exception as e:
+            print(f"Slack monthly digest skipped due to error: {e}")
         return "OK", 200
 
     except Exception as e:

@@ -15,7 +15,7 @@ gcloud functions deploy fetch-asana-tasks \
   --trigger-http \
   --allow-unauthenticated \
   --env-vars-file=env.yaml \
-  --set-secrets=ASANA_ACCESS_TOKEN=asana-access-token:latest \
+  --set-secrets=ASANA_ACCESS_TOKEN=asana-access-token:latest,SLACK_BOT_TOKEN=slack-bot-token:latest \
   --timeout=540s \
   --gen2
 
@@ -30,7 +30,7 @@ gcloud functions deploy export-to-sheets \
   --trigger-http \
   --allow-unauthenticated \
   --env-vars-file=env.yaml \
-  --set-secrets=ASANA_ACCESS_TOKEN=asana-access-token:latest \
+  --set-secrets=ASANA_ACCESS_TOKEN=asana-access-token:latest,SLACK_BOT_TOKEN=slack-bot-token:latest \
   --timeout=540s \
   --gen2
 
