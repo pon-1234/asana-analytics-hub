@@ -301,6 +301,28 @@ def send_daily_digest(bq: bigquery.Client, target_date: Optional[str] = None, to
     mtd_hours = getattr(mtd, "mtd_hours", 0.0) if mtd else 0.0
     mtd_tasks = getattr(mtd, "mtd_tasks", 0) if mtd else 0
 
+    # None を安全に数値へ
+    try:
+        total_hours = float(total_hours or 0.0)
+    except Exception:
+        total_hours = 0.0
+    try:
+        estimated_hours = float(estimated_hours or 0.0)
+    except Exception:
+        estimated_hours = 0.0
+    try:
+        mtd_hours = float(mtd_hours or 0.0)
+    except Exception:
+        mtd_hours = 0.0
+    try:
+        tasks_count = int(tasks_count or 0)
+    except Exception:
+        tasks_count = 0
+    try:
+        mtd_tasks = int(mtd_tasks or 0)
+    except Exception:
+        mtd_tasks = 0
+
     ratio_str = (
         f"{round((total_hours / estimated_hours) * 100.0, 1)}%" if estimated_hours and estimated_hours > 0 else "0%"
     )
