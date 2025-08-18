@@ -65,6 +65,20 @@ def _hm(hours: Optional[float]) -> str:
     return f"{round(float(hours or 0.0), 2)}h"
 
 
+def _quick_links_elements() -> List[Dict[str, Any]]:
+    """Return a single-element context with quick links to Sheets and BigQuery."""
+    links: List[str] = []
+    if config.SPREADSHEET_ID:
+        sheets_url = f"https://docs.google.com/spreadsheets/d/{config.SPREADSHEET_ID}"
+        links.append(f"<${{sheets_url}}|Sheets>")
+    if config.GCP_PROJECT_ID:
+        bq_url = f"https://console.cloud.google.com/bigquery?project={config.GCP_PROJECT_ID}"
+        links.append(f"<${{bq_url}}|BigQuery>")
+    if not links:
+        return []
+    return [{"type": "mrkdwn", "text": " | ".join(links)}]
+
+
 def send_run_summary(tasks_processed: int, started_at_iso: str, finished_at_iso: str, errors: int = 0) -> None:
     """Send a concise health summary after fetch completes."""
     title = "*Asana → BigQuery 同期結果*"
@@ -86,6 +100,9 @@ def send_run_summary(tasks_processed: int, started_at_iso: str, finished_at_iso:
             ],
         },
     ]
+    ql = _quick_links_elements()
+    if ql:
+        blocks.append({"type": "context", "elements": ql})
     _post_message(blocks, text_fallback="Asana→BQ 同期結果")
 
 
@@ -185,6 +202,9 @@ def send_monthly_digest(bq: bigquery.Client, month: Optional[str] = None, top_n:
         {"type": "section", "text": {"type": "mrkdwn", "text": assignees_tbl}},
         {"type": "context", "elements": [{"type": "mrkdwn", "text": f"データソース: `{config.BQ_TABLE_FQN}` / TZ: Asia/Tokyo"}]},
     ]
+    ql = _quick_links_elements()
+    if ql:
+        blocks.append({"type": "context", "elements": ql})
     _post_message(blocks, text_fallback=f"{chosen_month} 月次ダイジェスト")
 
 
@@ -354,4 +374,7 @@ def send_daily_digest(bq: bigquery.Client, target_date: Optional[str] = None, to
         },
         {"type": "context", "elements": [{"type": "mrkdwn", "text": f"データ: `{config.BQ_TABLE_FQN}`  / TZ: {tz}"}]},
     ]
+    ql = _quick_links_elements()
+    if ql:
+        blocks.append({"type": "context", "elements": ql})
     _post_message(blocks, text_fallback=f"{day_str} 日次ダイジェスト")
