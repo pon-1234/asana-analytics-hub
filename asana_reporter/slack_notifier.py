@@ -9,23 +9,24 @@ from . import config
 
 # Environment-driven configuration (optional; safe to skip when unset)
 SLACK_CHANNEL_ID = os.getenv("SLACK_CHANNEL_ID")
+SLACK_ALERT_CHANNEL_ID = os.getenv("SLACK_ALERT_CHANNEL_ID")  # 下振れ強アラート用（任意）
 SLACK_BOT_TOKEN = os.getenv("SLACK_BOT_TOKEN")
 
 _slack_client: Optional[WebClient] = WebClient(token=SLACK_BOT_TOKEN) if SLACK_BOT_TOKEN else None
 
 
-def _post_message(blocks: List[Dict[str, Any]], text_fallback: str, thread_ts: Optional[str] = None) -> Optional[str]:
+def _post_message_to(channel_id: Optional[str], blocks: List[Dict[str, Any]], text_fallback: str, thread_ts: Optional[str] = None) -> Optional[str]:
     """Post a message to Slack if configured. Returns ts or None.
 
     This function is intentionally non-fatal: if Slack is not configured or the
     API call fails, it prints a message and returns None without raising.
     """
-    if not _slack_client or not SLACK_CHANNEL_ID:
+    if not _slack_client or not channel_id:
         print("Slack token/channel not configured. Skipping Slack post.")
         return None
     try:
         resp = _slack_client.chat_postMessage(
-            channel=SLACK_CHANNEL_ID,
+            channel=channel_id,
             text=text_fallback,
             blocks=blocks,
             thread_ts=thread_ts,
@@ -41,6 +42,10 @@ def _post_message(blocks: List[Dict[str, Any]], text_fallback: str, thread_ts: O
     except Exception as e:
         print(f"Slack post failed: {e}")
         return None
+
+
+def _post_message(blocks: List[Dict[str, Any]], text_fallback: str, thread_ts: Optional[str] = None) -> Optional[str]:
+    return _post_message_to(SLACK_CHANNEL_ID, blocks, text_fallback, thread_ts)
 
 
 def _as_mrkdwn_table(rows: List[Dict[str, Any]], cols: List[str], headers: List[str]) -> str:
@@ -70,10 +75,10 @@ def _quick_links_elements() -> List[Dict[str, Any]]:
     links: List[str] = []
     if config.SPREADSHEET_ID:
         sheets_url = f"https://docs.google.com/spreadsheets/d/{config.SPREADSHEET_ID}"
-        links.append(f"<${{sheets_url}}|Sheets>")
+        links.append(f"<{sheets_url}|Sheets>")
     if config.GCP_PROJECT_ID:
         bq_url = f"https://console.cloud.google.com/bigquery?project={config.GCP_PROJECT_ID}"
-        links.append(f"<${{bq_url}}|BigQuery>")
+        links.append(f"<{bq_url}|BigQuery>")
     if not links:
         return []
     return [{"type": "mrkdwn", "text": " | ".join(links)}]
@@ -235,19 +240,24 @@ def send_daily_digest(bq: bigquery.Client, target_date: Optional[str] = None, to
     WHERE DATE(completed_at, '{tz}') = {y_expr}
     """
 
+    # 直近7営業日の平均（週末除外）
     w_sql = base + f"""
-    SELECT
-      AVG(tasks) AS avg_tasks,
-      AVG(hours) AS avg_hours
-    FROM (
+    WITH daily AS (
       SELECT
         DATE(completed_at, '{tz}') AS d,
         COUNT(task_id) AS tasks,
         SUM(IFNULL(actual_time,0.0)) AS hours
       FROM unique_tasks
-      WHERE DATE(completed_at, '{tz}') BETWEEN DATE_SUB({y_expr}, INTERVAL 8 DAY) AND DATE_SUB({y_expr}, INTERVAL 1 DAY)
+      WHERE DATE(completed_at, '{tz}') BETWEEN DATE_SUB({y_expr}, INTERVAL 30 DAY) AND DATE_SUB({y_expr}, INTERVAL 1 DAY)
       GROUP BY d
+    ), business7 AS (
+      SELECT d, tasks, hours
+      FROM daily
+      WHERE EXTRACT(DAYOFWEEK FROM d) NOT IN (1,7)
+      ORDER BY d DESC
+      LIMIT 7
     )
+    SELECT AVG(tasks) AS avg_tasks, AVG(hours) AS avg_hours FROM business7
     """
 
     top_projects_sql = base + f"""
@@ -276,12 +286,35 @@ def send_daily_digest(bq: bigquery.Client, target_date: Optional[str] = None, to
     FROM unique_tasks
     """
 
+    # 担当者別（昨日）
+    y_assignee_sql = base + f"""
+    SELECT assignee_name, COUNT(task_id) AS tasks, SUM(IFNULL(actual_time,0.0)) AS hours
+    FROM unique_tasks
+    WHERE assignee_name IS NOT NULL AND assignee_name != ''
+      AND DATE(completed_at, '{tz}') = {y_expr}
+    GROUP BY assignee_name
+    """
+
+    # 担当者別の営業日ベースライン（直近7営業日平均）
+    hist_assignee_daily_sql = base + f"""
+    SELECT assignee_name, d, COUNT(task_id) AS tasks, SUM(IFNULL(actual_time,0.0)) AS hours
+    FROM unique_tasks
+    CROSS JOIN UNNEST([DATE(completed_at, '{tz}')]) AS d
+    WHERE assignee_name IS NOT NULL AND assignee_name != ''
+      AND DATE(completed_at, '{tz}') BETWEEN DATE_SUB({y_expr}, INTERVAL 30 DAY) AND DATE_SUB({y_expr}, INTERVAL 1 DAY)
+    GROUP BY assignee_name, d
+    HAVING EXTRACT(DAYOFWEEK FROM d) NOT IN (1,7)
+    """
+
     y = next(iter(bq.query(y_sql).result()), None)
     w_iter = list(bq.query(w_sql).result())
     w = w_iter[0] if w_iter else None
     projects = list(bq.query(top_projects_sql).result())
     assignees = list(bq.query(top_assignees_sql).result())
     mtd = next(iter(bq.query(mtd_sql).result()), None)
+    # 担当者別昨日/履歴
+    y_by_assignee = list(bq.query(y_assignee_sql).result())
+    hist_assignee_daily = list(bq.query(hist_assignee_daily_sql).result())
 
     def pct(a: Optional[float], b: Optional[float]) -> Optional[float]:
         if b is None or b == 0:
@@ -347,7 +380,8 @@ def send_daily_digest(bq: bigquery.Client, target_date: Optional[str] = None, to
         f"{round((total_hours / estimated_hours) * 100.0, 1)}%" if estimated_hours and estimated_hours > 0 else "0%"
     )
 
-    blocks: List[Dict[str, Any]] = [
+    # 親メッセージ（KPI）
+    parent_blocks: List[Dict[str, Any]] = [
         {"type": "section", "text": {"type": "mrkdwn", "text": title}},
         {
             "type": "section",
@@ -360,11 +394,6 @@ def send_daily_digest(bq: bigquery.Client, target_date: Optional[str] = None, to
         },
         {"type": "context", "elements": [{"type": "mrkdwn", "text": baseline}]},
         {"type": "divider"},
-        {"type": "section", "text": {"type": "mrkdwn", "text": "*Top Projects（昨日）*"}},
-        {"type": "section", "text": {"type": "mrkdwn", "text": projects_tbl}},
-        {"type": "section", "text": {"type": "mrkdwn", "text": "*Top Assignees（昨日）*"}},
-        {"type": "section", "text": {"type": "mrkdwn", "text": assignees_tbl}},
-        {"type": "divider"},
         {
             "type": "section",
             "fields": [
@@ -376,5 +405,109 @@ def send_daily_digest(bq: bigquery.Client, target_date: Optional[str] = None, to
     ]
     ql = _quick_links_elements()
     if ql:
-        blocks.append({"type": "context", "elements": ql})
-    _post_message(blocks, text_fallback=f"{day_str} 日次ダイジェスト")
+        parent_blocks.append({"type": "context", "elements": ql})
+
+    thread_ts = _post_message(parent_blocks, text_fallback=f"{day_str} 日次ダイジェスト")
+
+    # スレッドにTopセクションを分割投稿
+    if thread_ts:
+        _post_message([
+            {"type": "section", "text": {"type": "mrkdwn", "text": "*Top Projects（昨日）*"}},
+            {"type": "section", "text": {"type": "mrkdwn", "text": projects_tbl}},
+        ], text_fallback="Top Projects", thread_ts=thread_ts)
+        _post_message([
+            {"type": "section", "text": {"type": "mrkdwn", "text": "*Top Assignees（昨日）*"}},
+            {"type": "section", "text": {"type": "mrkdwn", "text": assignees_tbl}},
+        ], text_fallback="Top Assignees", thread_ts=thread_ts)
+
+    # 担当者ごとの異常候補（上位3）
+    anomalies_blocks: Optional[List[Dict[str, Any]]] = None
+    if hist_assignee_daily:
+        # 平均を計算
+        from collections import defaultdict
+        total_by_assignee: Dict[str, Dict[str, float]] = defaultdict(lambda: {"tasks_sum": 0.0, "hours_sum": 0.0, "days": 0.0})
+        for r in hist_assignee_daily:
+            key = r.assignee_name
+            total_by_assignee[key]["tasks_sum"] += float(r.tasks or 0.0)
+            total_by_assignee[key]["hours_sum"] += float(r.hours or 0.0)
+            total_by_assignee[key]["days"] += 1.0
+        avg_by_assignee: Dict[str, Dict[str, float]] = {}
+        for k, v in total_by_assignee.items():
+            d = max(1.0, v["days"])
+            avg_by_assignee[k] = {
+                "avg_tasks": v["tasks_sum"] / d,
+                "avg_hours": v["hours_sum"] / d,
+            }
+        # 昨日の実績
+        y_map: Dict[str, Dict[str, float]] = {r.assignee_name: {"tasks": float(r.tasks or 0.0), "hours": float(r.hours or 0.0)} for r in y_by_assignee}
+        # 全キー集合
+        all_names = set(avg_by_assignee.keys()) | set(y_map.keys())
+        candidates = []
+        for name in all_names:
+            avg = avg_by_assignee.get(name, {"avg_tasks": 0.0, "avg_hours": 0.0})
+            if avg["avg_tasks"] <= 0 and avg["avg_hours"] <= 0:
+                continue
+            yval = y_map.get(name, {"tasks": 0.0, "hours": 0.0})
+            hours_vs_pct = None if avg["avg_hours"] == 0 else round((yval["hours"] - avg["avg_hours"]) / avg["avg_hours"] * 100.0, 1)
+            tasks_vs_pct = None if avg["avg_tasks"] == 0 else round((yval["tasks"] - avg["avg_tasks"]) / avg["avg_tasks"] * 100.0, 1)
+            is_anom = False
+            if avg["avg_hours"] > 0 and yval["hours"] < 0.5 * avg["avg_hours"]:
+                is_anom = True
+            if avg["avg_tasks"] > 0 and yval["tasks"] < 0.5 * avg["avg_tasks"]:
+                is_anom = True
+            if avg["avg_tasks"] > 0 and yval["tasks"] == 0:
+                is_anom = True
+            if is_anom:
+                candidates.append({
+                    "assignee": name,
+                    "hours": round(yval["hours"], 2),
+                    "tasks": int(yval["tasks"]),
+                    "avg_hours": round(avg["avg_hours"], 2),
+                    "avg_tasks": round(avg["avg_tasks"], 2),
+                    "hours_vs": hours_vs_pct,
+                    "tasks_vs": tasks_vs_pct,
+                })
+        # 強い下振れ順に上位3
+        def severity_key(r: Dict[str, Any]) -> float:
+            hv = r.get("hours_vs")
+            tv = r.get("tasks_vs")
+            worst = min([v for v in [hv, tv] if v is not None] or [0.0])
+            return worst
+        candidates.sort(key=severity_key)
+        top3 = candidates[:3]
+        if top3:
+            anomalies_tbl = _as_mrkdwn_table(
+                [
+                    {
+                        "担当者": r["assignee"],
+                        "実績h": r["hours"],
+                        "直近Avg h": r["avg_hours"],
+                        "h比%": r["hours_vs"],
+                        "件数": r["tasks"],
+                        "直近Avg 件": r["avg_tasks"],
+                        "件比%": r["tasks_vs"],
+                    }
+                    for r in top3
+                ],
+                ["担当者", "実績h", "直近Avg h", "h比%", "件数", "直近Avg 件", "件比%"],
+                ["担当者", "実績h", "直近Avg h", "h比%", "件数", "直近Avg 件", "件比%"],
+            )
+            anomalies_blocks = [
+                {"type": "section", "text": {"type": "mrkdwn", "text": "*担当者ごとの異常候補（上位3）*"}},
+                {"type": "section", "text": {"type": "mrkdwn", "text": anomalies_tbl}},
+            ]
+    if thread_ts and anomalies_blocks:
+        _post_message(anomalies_blocks, text_fallback="担当者の異常候補", thread_ts=thread_ts)
+
+    # 強い下振れアラート（別チャンネル）。-60% 以下なら通知。
+    try:
+        if (hours_vs is not None and hours_vs <= -60.0) or (tasks_vs is not None and tasks_vs <= -60.0):
+            alert_text = f"⚠️ 下振れ検知 {day_str}: 件数 {tasks_vs if tasks_vs is not None else 'N/A'}% / 時間 {hours_vs if hours_vs is not None else 'N/A'}%"
+            _post_message_to(
+                SLACK_ALERT_CHANNEL_ID or SLACK_CHANNEL_ID,
+                blocks=[{"type": "section", "text": {"type": "mrkdwn", "text": alert_text}}],
+                text_fallback=alert_text,
+            )
+    except Exception as _:
+        # non-fatal
+        pass
