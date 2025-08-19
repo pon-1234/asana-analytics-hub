@@ -251,3 +251,109 @@ def get_completed_tasks_for_project(
     return processed_tasks
 
 
+def get_open_tasks_for_project(
+    api_client: asana.ApiClient,
+    project: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    """プロジェクト内の未完了タスク（親・サブタスク含む）をスナップショット用に取得する。
+
+    Asanaの仕様:
+      - completed_since=now を指定すると未完了タスクのみを返す（完了済みは返らない）
+    """
+    tasks_api = asana.TasksApi(api_client)
+    project_name = project['name']
+    project_id = project['gid']
+
+    opts = {
+        'completed_since': 'now',
+        'opt_fields': [
+            'name', 'gid', 'completed', 'completed_at', 'created_at', 'due_on', 'modified_at',
+            'assignee', 'assignee.name', 'assignee.gid', 'num_subtasks',
+            'custom_fields', 'custom_fields.name', 'custom_fields.number_value', 'custom_fields.text_value', 'custom_fields.display_value'
+        ],
+        'limit': 100,
+    }
+
+    def _with_retry(call, *args, **kwargs):
+        attempts = 0
+        while True:
+            try:
+                return call(*args, **kwargs)
+            except asana.rest.ApiException as e:
+                if getattr(e, 'status', None) in (429, 500, 502, 503):
+                    retry_after = None
+                    try:
+                        retry_after = int(getattr(e, 'headers', {}).get('Retry-After', '0'))
+                    except Exception:
+                        retry_after = None
+                    sleep_sec = retry_after if retry_after and retry_after > 0 else min(30, 2 ** attempts)
+                    attempts += 1
+                    if attempts > 5:
+                        raise
+                    time.sleep(sleep_sec)
+                    continue
+                raise
+
+    try:
+        tasks_response = _with_retry(
+            tasks_api.get_tasks_for_project,
+            project_gid=project_id,
+            opts=opts,
+        )
+    except asana.rest.ApiException as e:
+        if getattr(e, 'status', None) == 404:
+            print(f"  Project '{project_name}' not found or access denied. Skipping (open tasks).")
+            return []
+        raise
+
+    open_rows: List[Dict[str, Any]] = []
+    for task_dict in tasks_response:
+        # 親・未完了
+        if not task_dict.get('completed'):
+            assignee = task_dict.get('assignee')
+            has_time_fields = bool(_parse_custom_fields(task_dict.get('custom_fields', [])).get('estimated_time') or _parse_custom_fields(task_dict.get('custom_fields', [])).get('actual_time_raw'))
+            open_rows.append({
+                'task_id': task_dict['gid'],
+                'task_name': task_dict.get('name'),
+                'project_gid': project_id,
+                'project_name': project_name,
+                'assignee_gid': assignee['gid'] if assignee else None,
+                'assignee_name': assignee['name'] if assignee else None,
+                'due_on': task_dict.get('due_on'),
+                'created_at': task_dict.get('created_at'),
+                'modified_at': task_dict.get('modified_at'),
+                'is_overdue': False,  # 後段で判定
+                'has_time_fields': has_time_fields,
+            })
+
+        # サブタスク（未完）も取得
+        if task_dict.get('num_subtasks', 0) > 0:
+            try:
+                subtasks = _with_retry(
+                    tasks_api.get_subtasks_for_task,
+                    parent_task_id=task_dict['gid'],
+                    opts={'opt_fields': 'name,completed,completed_at,created_at,modified_at,due_on,assignee.name,assignee.gid,custom_fields'}
+                )
+            except asana.rest.ApiException:
+                subtasks = []
+            for subtask in subtasks:
+                if subtask.get('completed'):
+                    continue
+                sub_assignee = subtask.get('assignee')
+                has_time_fields = bool(_parse_custom_fields(subtask.get('custom_fields', [])).get('estimated_time') or _parse_custom_fields(subtask.get('custom_fields', [])).get('actual_time_raw'))
+                open_rows.append({
+                    'task_id': subtask['gid'],
+                    'task_name': f"[Subtask] {subtask.get('name')}",
+                    'project_gid': project_id,
+                    'project_name': project_name,
+                    'assignee_gid': sub_assignee['gid'] if sub_assignee else None,
+                    'assignee_name': sub_assignee['name'] if sub_assignee else None,
+                    'due_on': subtask.get('due_on'),
+                    'created_at': subtask.get('created_at'),
+                    'modified_at': subtask.get('modified_at'),
+                    'is_overdue': False,
+                    'has_time_fields': has_time_fields,
+                })
+
+    return open_rows
+

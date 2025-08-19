@@ -54,6 +54,8 @@ def fetch_asana_tasks_to_bq(request: Request):
         config.validate_config()
 
         bq_client = bigquery.get_bigquery_client()
+        # Ensure base structures
+        bigquery.ensure_table_exists(bq_client)
         bigquery.ensure_views(bq_client)
         api_client, _, _ = asana.get_asana_client()
 
@@ -103,10 +105,17 @@ def fetch_asana_tasks_to_bq(request: Request):
         print(f"\nTotal tasks collected/updated: {len(all_tasks)}")
 
         if all_tasks:
-            bigquery.ensure_table_exists(bq_client)
             bigquery.upsert_tasks_via_merge(bq_client, all_tasks)
         else:
             print("No new or updated tasks to save.")
+
+        # Post-processing: minutes backfill and clustering alignment (idempotent)
+        try:
+            bigquery.backfill_minutes_columns(bq_client)
+            bigquery.update_completed_tasks_clustering_to_ids(bq_client)
+            bigquery.ensure_views(bq_client)
+        except Exception as e:
+            print(f"Non-fatal: post-processing skipped/failed: {e}")
 
         print("--- Asana to BigQuery sync finished successfully ---")
         # Slack: health summary + daily digest (non-fatal)
@@ -170,6 +179,64 @@ def export_reports_to_sheets(request: Request):
         print(f"An error occurred in export_reports_to_sheets: {e}")
         traceback.print_exc()
         return "Error", 500
+@functions_framework.http
+def snapshot_open_tasks(request: Request):
+    """
+    未完了タスクのスナップショットを収集し、`open_tasks_snapshot` に保存するCloud Function。
+    実行タイミングは毎朝（JST）を想定。
+    """
+    print("--- Starting Open Tasks Snapshot ---")
+    try:
+        config.validate_config()
+        bq_client = bigquery.get_bigquery_client()
+        bigquery.ensure_open_tasks_snapshot_table(bq_client)
+        api_client, _, _ = asana.get_asana_client()
+
+        projects = asana.get_all_projects(api_client)
+        print(f"Found {len(projects)} projects to scan for open tasks.")
+
+        from datetime import date
+        from zoneinfo import ZoneInfo as _ZoneInfo
+        jst_today = date.today().strftime("%Y-%m-%d")
+        jst = _ZoneInfo("Asia/Tokyo")
+        jst_date_today = datetime.now(jst).date()
+
+        all_rows = []
+        for i, project in enumerate(projects):
+            print(f"[{i+1}/{len(projects)}] Scanning project: {project['name']} ({project['gid']})")
+            rows = asana.get_open_tasks_for_project(api_client, project)
+            # Overdue flag
+            for r in rows:
+                due_on = r.get('due_on')
+                try:
+                    is_overdue = bool(due_on) and (datetime.strptime(due_on, "%Y-%m-%d").date() < jst_date_today)
+                except Exception:
+                    is_overdue = False
+                r['is_overdue'] = is_overdue
+                r['snapshot_date'] = jst_today
+                r['snapshot_at'] = datetime.now(timezone.utc).isoformat()
+            all_rows.extend(rows)
+
+        print(f"Total open tasks collected: {len(all_rows)}")
+        if all_rows:
+            bigquery.insert_open_tasks_snapshot(bq_client, all_rows)
+        else:
+            print("No open tasks to snapshot.")
+
+        # Optional: notify summary to Slack channel (prototype)
+        try:
+            from asana_reporter.slack_notifier import send_open_tasks_summary
+            send_open_tasks_summary(bq_client, jst_today)
+        except Exception as e:
+            print(f"Slack summary skipped: {e}")
+
+        print("--- Open Tasks Snapshot finished ---")
+        return {"status": "success", "open_tasks": len(all_rows)}, 200
+    except Exception as e:
+        import traceback
+        print(f"FATAL Error in snapshot_open_tasks: {e}")
+        traceback.print_exc()
+        return {"status": "error", "message": str(e)}, 500
 
 
 if __name__ == '__main__':

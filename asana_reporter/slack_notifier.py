@@ -502,3 +502,74 @@ def send_daily_digest(bq: bigquery.Client, target_date: Optional[str] = None, to
     except Exception as _:
         # non-fatal
         pass
+
+
+def send_open_tasks_summary(bq: bigquery.Client, snapshot_date: Optional[str] = None, top_n: int = 5) -> None:
+    """Post a brief summary of open tasks snapshot to the main channel.
+
+    Shows counts, overdue count, and top projects/assignees by open items for a given snapshot_date (YYYY-MM-DD, JST).
+    """
+    if not _slack_client or not SLACK_CHANNEL_ID:
+        return
+    tz = "Asia/Tokyo"
+    date_expr = f"DATE '{snapshot_date}'" if snapshot_date else f"CURRENT_DATE('{tz}')"
+
+    base = f"""
+    WITH s AS (
+      SELECT * FROM `{config.GCP_PROJECT_ID}.{config.BQ_DATASET_ID}.open_tasks_snapshot`
+      WHERE snapshot_date = {date_expr}
+    )
+    """
+
+    kpi_sql = base + """
+    SELECT COUNT(1) AS open_count, SUM(CASE WHEN is_overdue THEN 1 ELSE 0 END) AS overdue
+    FROM s
+    """
+    top_projects_sql = base + f"""
+    SELECT project_name, COUNT(1) AS cnt
+    FROM s
+    GROUP BY project_name
+    ORDER BY cnt DESC
+    LIMIT {top_n}
+    """
+    top_assignees_sql = base + f"""
+    SELECT assignee_name, COUNT(1) AS cnt
+    FROM s
+    WHERE assignee_name IS NOT NULL AND assignee_name != ''
+    GROUP BY assignee_name
+    ORDER BY cnt DESC
+    LIMIT {top_n}
+    """
+
+    kpi = next(iter(bq.query(kpi_sql).result()), None)
+    projects = list(bq.query(top_projects_sql).result())
+    assignees = list(bq.query(top_assignees_sql).result())
+
+    title = f"*📌 未完了タスク スナップショット — {snapshot_date or '(today JST)'}*"
+    projects_tbl = _as_mrkdwn_table(
+        [{"project": r.project_name, "open": r.cnt} for r in projects],
+        ["project", "open"],
+        ["プロジェクト", "未完了"]
+    )
+    assignees_tbl = _as_mrkdwn_table(
+        [{"assignee": r.assignee_name, "open": r.cnt} for r in assignees],
+        ["assignee", "open"],
+        ["担当者", "未完了"]
+    )
+
+    blocks: List[Dict[str, Any]] = [
+        {"type": "section", "text": {"type": "mrkdwn", "text": title}},
+        {"type": "section", "fields": [
+            {"type": "mrkdwn", "text": f"*未完了件数: *\n{getattr(kpi, 'open_count', 0)}"},
+            {"type": "mrkdwn", "text": f"*期日超過: *\n{getattr(kpi, 'overdue', 0)}"},
+        ]},
+        {"type": "divider"},
+        {"type": "section", "text": {"type": "mrkdwn", "text": "*Top Projects*"}},
+        {"type": "section", "text": {"type": "mrkdwn", "text": projects_tbl}},
+        {"type": "section", "text": {"type": "mrkdwn", "text": "*Top Assignees*"}},
+        {"type": "section", "text": {"type": "mrkdwn", "text": assignees_tbl}},
+    ]
+    ql = _quick_links_elements()
+    if ql:
+        blocks.append({"type": "context", "elements": ql})
+    _post_message(blocks, text_fallback="未完了タスク スナップショット")

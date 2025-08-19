@@ -26,13 +26,17 @@ def ensure_views(client: bigquery.Client):
         task_name,
         parent_task_id,
         TRIM(project_name) AS project_name,
+        project_gid,
         assignee_name,
+        assignee_gid,
         completed_at,
         modified_at,
         inserted_at,
         estimated_time,
         actual_time,
         actual_time_raw,
+        estimated_minutes,
+        actual_minutes,
         is_subtask,
         ROW_NUMBER() OVER (PARTITION BY task_id ORDER BY modified_at DESC, inserted_at DESC) AS rn
       FROM `{config.BQ_TABLE_FQN}`
@@ -42,6 +46,26 @@ def ensure_views(client: bigquery.Client):
     """
     client.query(view_sql).result()
     print("View v_unique_tasks ensured.")
+
+    # Optional: date-granularity helper view for daily aggregations
+    daily_view_sql = f"""
+    CREATE OR REPLACE VIEW `{config.GCP_PROJECT_ID}.{config.BQ_DATASET_ID}.v_unique_tasks_daily` AS
+    WITH base AS (
+      SELECT
+        task_id,
+        project_name,
+        project_gid,
+        assignee_name,
+        assignee_gid,
+        DATE(completed_at, 'Asia/Tokyo') AS completed_date_jst,
+        estimated_minutes,
+        actual_minutes
+      FROM `{config.GCP_PROJECT_ID}.{config.BQ_DATASET_ID}.v_unique_tasks`
+    )
+    SELECT * FROM base;
+    """
+    client.query(daily_view_sql).result()
+    print("View v_unique_tasks_daily ensured.")
 
 def ensure_table_exists(client: bigquery.Client):
     """completed_tasksテーブルが存在しない場合に作成、または既存テーブルにカラムを追加"""
@@ -109,10 +133,104 @@ def ensure_table_exists(client: bigquery.Client):
             type_=bigquery.TimePartitioningType.MONTH,
             field="completed_at",
         )
-        table.clustering_fields = ["project_name", "assignee_name"]
+        # Cluster by stable IDs for better pruning on joins/filters
+        table.clustering_fields = ["project_gid", "assignee_gid"]
         
         client.create_table(table)
         print(f"Table '{config.BQ_TABLE_FQN}' created with partitioning and clustering.")
+
+def backfill_minutes_columns(client: bigquery.Client):
+    """Backfill estimated_minutes/actual_minutes from legacy columns.
+
+    - estimated_minutes <- estimated_time (minutes)
+    - actual_minutes <- actual_time_raw (minutes) else actual_time (hours) * 60
+    """
+    print("Backfilling minutes columns if needed...")
+    backfill_sql = f"""
+    -- estimated_minutes from estimated_time
+    UPDATE `{config.BQ_TABLE_FQN}`
+    SET estimated_minutes = estimated_time
+    WHERE estimated_minutes IS NULL AND estimated_time IS NOT NULL;
+
+    -- actual_minutes from actual_time_raw first
+    UPDATE `{config.BQ_TABLE_FQN}`
+    SET actual_minutes = actual_time_raw
+    WHERE actual_minutes IS NULL AND actual_time_raw IS NOT NULL;
+
+    -- otherwise from actual_time (hours)
+    UPDATE `{config.BQ_TABLE_FQN}`
+    SET actual_minutes = actual_time * 60.0
+    WHERE actual_minutes IS NULL AND actual_time IS NOT NULL;
+    """
+    # BigQuery supports running multiple statements when enabled via job config; issue sequentially for reliability
+    for stmt in [s.strip() for s in backfill_sql.split(";\n") if s.strip()]:
+        client.query(stmt).result()
+    print("Backfill completed.")
+
+def update_completed_tasks_clustering_to_ids(client: bigquery.Client):
+    """Switch clustering to project_gid/assignee_gid for the completed_tasks table."""
+    print("Updating clustering fields to project_gid, assignee_gid (if supported)...")
+    alter = f"""
+    ALTER TABLE `{config.BQ_TABLE_FQN}`
+    SET OPTIONS (
+      clustering_fields = ['project_gid','assignee_gid']
+    )
+    """
+    try:
+        client.query(alter).result()
+        print("Clustering updated.")
+    except Exception as e:
+        # Non-fatal in case of permissions or unsupported state
+        print(f"Clustering update skipped or failed: {e}")
+
+def ensure_open_tasks_snapshot_table(client: bigquery.Client):
+    """Ensure the open_tasks_snapshot table exists for daily snapshots of incomplete tasks."""
+    dataset_ref = client.dataset(config.BQ_DATASET_ID)
+    table_ref = dataset_ref.table("open_tasks_snapshot")
+    try:
+        client.get_table(table_ref)
+        print("Table open_tasks_snapshot already exists.")
+        return
+    except NotFound:
+        pass
+
+    schema = [
+        bigquery.SchemaField("snapshot_date", "DATE", mode="REQUIRED"),
+        bigquery.SchemaField("snapshot_at", "TIMESTAMP", mode="REQUIRED"),
+        bigquery.SchemaField("task_id", "STRING", mode="REQUIRED"),
+        bigquery.SchemaField("task_name", "STRING"),
+        bigquery.SchemaField("project_gid", "STRING"),
+        bigquery.SchemaField("project_name", "STRING"),
+        bigquery.SchemaField("assignee_gid", "STRING"),
+        bigquery.SchemaField("assignee_name", "STRING"),
+        bigquery.SchemaField("due_on", "DATE"),
+        bigquery.SchemaField("created_at", "TIMESTAMP"),
+        bigquery.SchemaField("modified_at", "TIMESTAMP"),
+        bigquery.SchemaField("is_overdue", "BOOLEAN"),
+        bigquery.SchemaField("has_time_fields", "BOOLEAN"),
+    ]
+
+    table = bigquery.Table(table_ref, schema=schema)
+    table.time_partitioning = bigquery.TimePartitioning(
+        type_=bigquery.TimePartitioningType.DAY,
+        field="snapshot_date",
+    )
+    table.clustering_fields = ["project_gid", "assignee_gid"]
+    client.create_table(table)
+    print("Table open_tasks_snapshot created.")
+
+def insert_open_tasks_snapshot(client: bigquery.Client, rows: List[Dict[str, Any]]):
+    """Append rows into open_tasks_snapshot."""
+    if not rows:
+        print("No open tasks to snapshot.")
+        return
+    dataset_ref = client.dataset(config.BQ_DATASET_ID)
+    table_ref = dataset_ref.table("open_tasks_snapshot")
+    errors = client.insert_rows_json(table=table_ref, json_rows=rows, ignore_unknown_values=True)
+    if errors:
+        print(f"Errors during open_tasks_snapshot insert: {errors}")
+        raise RuntimeError(str(errors))
+    print(f"Inserted {len(rows)} rows into open_tasks_snapshot.")
 
 def upsert_tasks_via_merge(client: bigquery.Client, tasks: List[Dict[str, Any]]):
     """STAGING→MERGEで原子的にUPSERTする。"""
