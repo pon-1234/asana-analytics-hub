@@ -115,14 +115,9 @@ def send_monthly_digest(bq: bigquery.Client, month: Optional[str] = None, top_n:
     """Post a monthly digest for a given YYYY-MM (default latest month in data)."""
     base = f"""
     WITH unique_tasks AS (
-      SELECT * EXCEPT(row_num) FROM (
-        SELECT
-          task_id, TRIM(project_name) AS project_name, assignee_name,
-          completed_at, actual_time, estimated_time, modified_at, inserted_at,
-          ROW_NUMBER() OVER(PARTITION BY task_id ORDER BY modified_at DESC, inserted_at DESC) AS row_num
-        FROM `{config.BQ_TABLE_FQN}`
-        WHERE completed_at IS NOT NULL
-      ) WHERE row_num = 1
+      SELECT task_id, TRIM(project_name) AS project_name, assignee_name,
+             completed_at, actual_time, estimated_time, modified_at, inserted_at
+      FROM `{config.GCP_PROJECT_ID}.{config.BQ_DATASET_ID}.v_unique_tasks`
     )
     """
 
@@ -220,14 +215,9 @@ def send_daily_digest(bq: bigquery.Client, target_date: Optional[str] = None, to
 
     base = f"""
     WITH unique_tasks AS (
-      SELECT * EXCEPT(row_num) FROM (
-        SELECT
-          task_id, TRIM(project_name) AS project_name, assignee_name,
-          completed_at, actual_time, estimated_time, modified_at, inserted_at,
-          ROW_NUMBER() OVER(PARTITION BY task_id ORDER BY modified_at DESC, inserted_at DESC) AS row_num
-        FROM `{config.BQ_TABLE_FQN}`
-        WHERE completed_at IS NOT NULL
-      ) WHERE row_num = 1
+      SELECT task_id, TRIM(project_name) AS project_name, assignee_name,
+             completed_at, actual_time, estimated_time, modified_at, inserted_at
+      FROM `{config.GCP_PROJECT_ID}.{config.BQ_DATASET_ID}.v_unique_tasks`
     )
     """
 

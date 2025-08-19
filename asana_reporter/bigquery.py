@@ -16,6 +16,33 @@ def get_bigquery_client() -> bigquery.Client:
         # GCP環境: ADCを使用
         return bigquery.Client(project=config.GCP_PROJECT_ID)
 
+def ensure_views(client: bigquery.Client):
+    """共通ビュー(v_unique_tasks)を作成・更新する"""
+    view_sql = f"""
+    CREATE OR REPLACE VIEW `{config.GCP_PROJECT_ID}.{config.BQ_DATASET_ID}.v_unique_tasks` AS
+    WITH ranked AS (
+      SELECT
+        task_id,
+        task_name,
+        parent_task_id,
+        TRIM(project_name) AS project_name,
+        assignee_name,
+        completed_at,
+        modified_at,
+        inserted_at,
+        estimated_time,
+        actual_time,
+        actual_time_raw,
+        is_subtask,
+        ROW_NUMBER() OVER (PARTITION BY task_id ORDER BY modified_at DESC, inserted_at DESC) AS rn
+      FROM `{config.BQ_TABLE_FQN}`
+      WHERE completed_at IS NOT NULL
+    )
+    SELECT * EXCEPT(rn) FROM ranked WHERE rn = 1;
+    """
+    client.query(view_sql).result()
+    print("View v_unique_tasks ensured.")
+
 def ensure_table_exists(client: bigquery.Client):
     """completed_tasksテーブルが存在しない場合に作成、または既存テーブルにカラムを追加"""
     dataset_ref = client.dataset(config.BQ_DATASET_ID)
@@ -137,25 +164,11 @@ def get_report_data(client: bigquery.Client) -> Dict[str, Iterator[Dict[str, Any
     """BigQueryからレポート用の集計データを取得する"""
     print("Querying BigQuery for report data...")
 
-    # ★修正点: `SELECT *` をやめ、必要なカラムを明示的に指定してエラーを回避
+    # v_unique_tasks を参照
     base_query = f"""
     WITH unique_tasks AS (
-      SELECT * EXCEPT(row_num)
-      FROM (
-        SELECT
-          task_id,
-          TRIM(project_name) AS project_name,
-          assignee_name,
-          completed_at,
-          actual_time,
-          estimated_time,
-          modified_at,
-          inserted_at,
-          ROW_NUMBER() OVER(PARTITION BY task_id ORDER BY modified_at DESC, inserted_at DESC) as row_num
-        FROM `{config.BQ_TABLE_FQN}`
-        WHERE completed_at IS NOT NULL
-      )
-      WHERE row_num = 1
+      SELECT task_id, project_name, assignee_name, completed_at, actual_time, estimated_time, modified_at, inserted_at
+      FROM `{config.GCP_PROJECT_ID}.{config.BQ_DATASET_ID}.v_unique_tasks`
     )
     """
 

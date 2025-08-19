@@ -54,6 +54,7 @@ def fetch_asana_tasks_to_bq(request: Request):
         config.validate_config()
 
         bq_client = bigquery.get_bigquery_client()
+        bigquery.ensure_views(bq_client)
         api_client, _, _ = asana.get_asana_client()
 
         # リクエストパラメータ（任意）
@@ -140,6 +141,7 @@ def export_reports_to_sheets(request: Request):
         config.validate_config()
         
         bq_client = bigquery.get_bigquery_client()
+        bigquery.ensure_views(bq_client)
         report_data = bigquery.get_report_data(bq_client)
 
         sheets_service = sheets.get_sheets_service()

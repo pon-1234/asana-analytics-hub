@@ -8,9 +8,9 @@ from dotenv import load_dotenv
 # 環境変数の読み込み
 load_dotenv()
 
-CLIENT_ID = "1208371053404112"
-CLIENT_SECRET = "e8743ee082d2057584949fd852a730fe"
-REDIRECT_URI = "http://localhost:8000/callback"
+CLIENT_ID = os.getenv("ASANA_CLIENT_ID", "")
+CLIENT_SECRET = os.getenv("ASANA_CLIENT_SECRET", "")
+REDIRECT_URI = os.getenv("ASANA_REDIRECT_URI", "http://localhost:8000/callback")
 
 class OAuthCallbackHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -29,6 +29,13 @@ class OAuthCallbackHandler(BaseHTTPRequestHandler):
                 "redirect_uri": REDIRECT_URI,
                 "code": code
             }
+            
+            if not CLIENT_ID or not CLIENT_SECRET:
+                self.send_response(400)
+                self.send_header('Content-type', 'text/html; charset=utf-8')
+                self.end_headers()
+                self.wfile.write("ASANA_CLIENT_ID/ASANA_CLIENT_SECRET が未設定です。".encode('utf-8'))
+                return
             
             response = requests.post(token_url, data=data)
             token_data = response.json()
