@@ -114,39 +114,6 @@ def update_sheet_with_report(service: Resource, report_type: str, results: Itera
                 body=body
             ).execute()
             print(f"Successfully updated {result.get('updatedCells', 0)} cells in '{sheet_name}'.")
-            # 3. 軽い整形（1行目固定、フィルタ、列幅自動、数値/日付フォーマット）
-            try:
-                requests = [
-                    {"updateSheetProperties": {"properties": {"title": sheet_name, "gridProperties": {"frozenRowCount": 1}}, "fields": "gridProperties.frozenRowCount"}},
-                    {"setBasicFilter": {"filter": {"range": {"sheetId": None}}}},
-                ]
-                # シートID解決
-                meta = service.spreadsheets().get(spreadsheetId=config.SPREADSHEET_ID).execute()
-                sheet_id = next((s['properties']['sheetId'] for s in meta.get('sheets', []) if s['properties']['title'] == sheet_name), None)
-                if sheet_id is not None:
-                    # replace None with actual sheetId
-                    for r in requests:
-                        target = r.get('setBasicFilter')
-                        if target:
-                            target['filter']['range']['sheetId'] = sheet_id
-                    # 列幅自動（A:F想定）
-                    requests.append({
-                        "autoResizeDimensions": {
-                            "dimensions": {"sheetId": sheet_id, "dimension": "COLUMNS", "startIndex": 0, "endIndex": 6}
-                        }
-                    })
-                    # 数値/日付フォーマット（時間/年月）
-                    requests.append({
-                        "repeatCell": {
-                            "range": {"sheetId": sheet_id, "startRowIndex": 1, "startColumnIndex": 2, "endColumnIndex": 5},
-                            "cell": {"userEnteredFormat": {"numberFormat": {"type": "NUMBER", "pattern": "0.00"}}},
-                            "fields": "userEnteredFormat.numberFormat"
-                        }
-                    })
-                service.spreadsheets().batchUpdate(spreadsheetId=config.SPREADSHEET_ID, body={"requests": requests}).execute()
-            except Exception as _:
-                # non-fatal formatting
-                pass
             return
         except HttpError as error:
             if "RESOURCE_EXHAUSTED" in str(error) or "Quota exceeded" in str(error):
