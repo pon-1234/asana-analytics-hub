@@ -97,6 +97,12 @@ SLACK_CHANNEL_ID="C0123456789"        # 投稿先チャンネルID
     PYTHONPATH=. python3 asana_reporter/main.py export
     ```
 
+3.  **ディメンション初期投入（任意）:**
+
+    ```bash
+    PYTHONPATH=. python3 tools/seed_dims.py
+    ```
+
 ## GCPへのデプロイ
 
 ### 1. 環境変数ファイル `env.yaml` の作成
@@ -118,6 +124,12 @@ SPREADSHEET_ID: "<Your Google Spreadsheet ID>"
 gcloud secrets create asana-access-token --project=<Your GCP Project ID>
 gcloud secrets versions add asana-access-token --data-from-file=- --project=<Your GCP Project ID>
 # 上記コマンド実行後、ターミナルにトークンをペーストしてCtrl+Dで完了
+```
+
+**シークレットのローテーション（推奨）:**
+
+```bash
+PROJECT=<Your GCP Project ID> bash tools/rotate_secrets.sh
 ```
 
 **データ取得用Function (`fetch-asana-tasks`):**
