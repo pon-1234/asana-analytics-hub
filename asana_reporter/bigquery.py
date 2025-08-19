@@ -72,6 +72,16 @@ def ensure_table_exists(client: bigquery.Client):
             alter_query = f"ALTER TABLE `{config.BQ_TABLE_FQN}` ADD COLUMN IF NOT EXISTS parent_task_id STRING"
             client.query(alter_query).result()
             print("Added column: parent_task_id")
+        # 新規列（後方互換で追加）
+        for col, typ in (
+            ("project_gid", "STRING"),
+            ("assignee_gid", "STRING"),
+            ("estimated_minutes", "FLOAT"),
+            ("actual_minutes", "FLOAT"),
+        ):
+            if col not in existing_columns:
+                client.query(f"ALTER TABLE `{config.BQ_TABLE_FQN}` ADD COLUMN IF NOT EXISTS {col} {typ}").result()
+                print(f"Added column: {col}")
             
     except NotFound:
         print(f"Table '{config.BQ_TABLE_FQN}' not found. Creating...")
@@ -143,6 +153,8 @@ def upsert_tasks_via_merge(client: bigquery.Client, tasks: List[Dict[str, Any]])
       project_id      = S.project_id,
       project_name    = S.project_name,
       assignee_name   = S.assignee_name,
+      project_gid     = COALESCE(S.project_gid, T.project_gid),
+      assignee_gid    = COALESCE(S.assignee_gid, T.assignee_gid),
       completed_at    = S.completed_at,
       created_at      = S.created_at,
       due_on          = S.due_on,
@@ -150,6 +162,8 @@ def upsert_tasks_via_merge(client: bigquery.Client, tasks: List[Dict[str, Any]])
       estimated_time  = S.estimated_time,
       actual_time     = S.actual_time,
       actual_time_raw = S.actual_time_raw,
+      estimated_minutes = COALESCE(S.estimated_minutes, T.estimated_minutes),
+      actual_minutes    = COALESCE(S.actual_minutes, T.actual_minutes),
       is_subtask      = S.is_subtask,
       parent_task_id  = S.parent_task_id,
       inserted_at     = S.inserted_at
@@ -167,7 +181,7 @@ def get_report_data(client: bigquery.Client) -> Dict[str, Iterator[Dict[str, Any
     # v_unique_tasks を参照
     base_query = f"""
     WITH unique_tasks AS (
-      SELECT task_id, project_name, assignee_name, completed_at, actual_time, estimated_time, modified_at, inserted_at
+      SELECT task_id, project_name, assignee_name, completed_at, actual_minutes, estimated_minutes, modified_at, inserted_at
       FROM `{config.GCP_PROJECT_ID}.{config.BQ_DATASET_ID}.v_unique_tasks`
     )
     """
@@ -178,8 +192,8 @@ def get_report_data(client: bigquery.Client) -> Dict[str, Iterator[Dict[str, Any
         FORMAT_TIMESTAMP("%Y-%m", completed_at, "Asia/Tokyo") as month,
         project_name,
         COUNT(task_id) as tasks_count,
-        SUM(IFNULL(actual_time, 0)) as total_actual_hours,
-        SUM(IFNULL(estimated_time, 0) / 60) as total_estimated_hours
+        SUM(IFNULL(actual_minutes, 0) / 60.0) as total_actual_hours,
+        SUM(IFNULL(estimated_minutes, 0) / 60.0) as total_estimated_hours
     FROM unique_tasks
     GROUP BY month, project_name
     ORDER BY month DESC, total_actual_hours DESC
@@ -191,8 +205,8 @@ def get_report_data(client: bigquery.Client) -> Dict[str, Iterator[Dict[str, Any
         FORMAT_TIMESTAMP("%Y-%m", completed_at, "Asia/Tokyo") as month,
         assignee_name,
         COUNT(task_id) as tasks_count,
-        SUM(IFNULL(actual_time, 0)) as total_actual_hours,
-        SUM(IFNULL(estimated_time, 0) / 60) as total_estimated_hours
+        SUM(IFNULL(actual_minutes, 0) / 60.0) as total_actual_hours,
+        SUM(IFNULL(estimated_minutes, 0) / 60.0) as total_estimated_hours
     FROM unique_tasks
     WHERE assignee_name IS NOT NULL AND assignee_name != ''
     GROUP BY month, assignee_name
@@ -206,8 +220,8 @@ def get_report_data(client: bigquery.Client) -> Dict[str, Iterator[Dict[str, Any
         project_name,
         assignee_name,
         COUNT(task_id) as tasks_count,
-        SUM(IFNULL(actual_time, 0)) as total_actual_hours,
-        SUM(IFNULL(estimated_time, 0) / 60) as total_estimated_hours
+        SUM(IFNULL(actual_minutes, 0) / 60.0) as total_actual_hours,
+        SUM(IFNULL(estimated_minutes, 0) / 60.0) as total_estimated_hours
     FROM unique_tasks
     WHERE assignee_name IS NOT NULL AND assignee_name != ''
     GROUP BY month, project_name, assignee_name

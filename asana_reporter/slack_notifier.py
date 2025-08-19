@@ -116,7 +116,7 @@ def send_monthly_digest(bq: bigquery.Client, month: Optional[str] = None, top_n:
     base = f"""
     WITH unique_tasks AS (
       SELECT task_id, TRIM(project_name) AS project_name, assignee_name,
-             completed_at, actual_time, estimated_time, modified_at, inserted_at
+             completed_at, actual_minutes, estimated_minutes, modified_at, inserted_at
       FROM `{config.GCP_PROJECT_ID}.{config.BQ_DATASET_ID}.v_unique_tasks`
     )
     """
@@ -216,7 +216,7 @@ def send_daily_digest(bq: bigquery.Client, target_date: Optional[str] = None, to
     base = f"""
     WITH unique_tasks AS (
       SELECT task_id, TRIM(project_name) AS project_name, assignee_name,
-             completed_at, actual_time, estimated_time, modified_at, inserted_at
+             completed_at, actual_minutes, estimated_minutes, modified_at, inserted_at
       FROM `{config.GCP_PROJECT_ID}.{config.BQ_DATASET_ID}.v_unique_tasks`
     )
     """
@@ -224,8 +224,8 @@ def send_daily_digest(bq: bigquery.Client, target_date: Optional[str] = None, to
     y_sql = base + f"""
     SELECT
       COUNT(task_id) AS tasks_count,
-      SUM(IFNULL(actual_time,0.0)) AS total_hours,
-      SUM(IFNULL(estimated_time,0.0))/60.0 AS estimated_hours
+      SUM(IFNULL(actual_minutes,0.0))/60.0 AS total_hours,
+      SUM(IFNULL(estimated_minutes,0.0))/60.0 AS estimated_hours
     FROM unique_tasks
     WHERE DATE(completed_at, '{tz}') = {y_expr}
     """
@@ -272,7 +272,7 @@ def send_daily_digest(bq: bigquery.Client, target_date: Optional[str] = None, to
 
     mtd_sql = base + f"""
     SELECT
-      SUM(IF(DATE(completed_at, '{tz}') BETWEEN DATE_TRUNC({y_expr}, MONTH) AND {y_expr}, IFNULL(actual_time,0.0), 0.0)) AS mtd_hours,
+      SUM(IF(DATE(completed_at, '{tz}') BETWEEN DATE_TRUNC({y_expr}, MONTH) AND {y_expr}, IFNULL(actual_minutes,0.0), 0.0)) AS mtd_hours,
       COUNTIF(DATE(completed_at, '{tz}') BETWEEN DATE_TRUNC({y_expr}, MONTH) AND {y_expr}) AS mtd_tasks
     FROM unique_tasks
     """

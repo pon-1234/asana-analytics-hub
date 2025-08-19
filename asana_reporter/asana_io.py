@@ -202,8 +202,10 @@ def get_completed_tasks_for_project(
                         'task_id': subtask_dict['gid'],
                         'task_name': f"[Subtask] {subtask_dict['name']}",
                         'project_id': project['gid'],
+                        'project_gid': project['gid'],
                         'project_name': project['name'],
                         'assignee_name': subtask_assignee['name'] if subtask_assignee else None,
+                        'assignee_gid': subtask_assignee['gid'] if subtask_assignee else None,
                         'completed_at': subtask_dict.get('completed_at'),
                         'created_at': subtask_dict.get('created_at'),
                         'due_on': subtask_dict.get('due_on'),
@@ -211,6 +213,8 @@ def get_completed_tasks_for_project(
                         'estimated_time': subtask_time_fields.get('estimated_time'),
                         'actual_time': subtask_time_fields.get('actual_time'),
                         'actual_time_raw': subtask_time_fields.get('actual_time_raw'),
+                        'estimated_minutes': subtask_time_fields.get('estimated_time'),
+                        'actual_minutes': subtask_time_fields.get('actual_time_raw'),
                         'is_subtask': True,
                         'parent_task_id': task_dict['gid']
                     }
@@ -225,8 +229,10 @@ def get_completed_tasks_for_project(
                 'task_id': task_dict['gid'],
                 'task_name': task_dict['name'],
                 'project_id': project['gid'],
+                'project_gid': project['gid'],
                 'project_name': project['name'],
                 'assignee_name': assignee['name'] if assignee else None,
+                'assignee_gid': assignee['gid'] if assignee else None,
                 'completed_at': task_dict.get('completed_at'),
                 'created_at': task_dict.get('created_at'),
                 'due_on': task_dict.get('due_on'),
@@ -234,6 +240,8 @@ def get_completed_tasks_for_project(
                 'estimated_time': time_fields.get('estimated_time'),
                 'actual_time': time_fields.get('actual_time'),
                 'actual_time_raw': time_fields.get('actual_time_raw'),
+                'estimated_minutes': time_fields.get('estimated_time'),
+                'actual_minutes': time_fields.get('actual_time_raw'),
                 'is_subtask': False,
                 'parent_task_id': None
             }
