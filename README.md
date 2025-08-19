@@ -14,7 +14,8 @@ Asanaから完了タスクのデータを取得し、BigQueryに保存、集計�
 ## アーキテクチャ
 
 1.  **Cloud Function (fetch-asana-tasks)**: Cloud Schedulerに毎日トリガーされ、Asana APIから完了タスクを取得し、BigQueryの`completed_tasks`テーブルに追記します。
-2.  **Cloud Function (export-to-sheets)**: Cloud Schedulerに毎月トリガーされ、BigQueryの`completed_tasks`テーブルのデータを集計し、結果をGoogle Sheetsに書き込みます。
+2.  **Cloud Function (export-to-sheets)**: Cloud Schedulerにより、BigQueryの`completed_tasks`の集計結果をGoogle Sheetsに書き込みます（頻度は運用ポリシーに合わせて変更可）。
+3.  **Cloud Function (snapshot-open-tasks)**: 毎朝（JST）未完了タスクをスナップショットとして `open_tasks_snapshot` に保存します。
 
  <!-- 図は後で作成・挿入するとより分かりやすいです -->
 
@@ -78,7 +79,7 @@ SLACK_CHANNEL_ID="C0123456789"        # 投稿先チャンネルID
 3.  サービスアカウントに以下のロールを付与します:
     -   `BigQuery データ編集者`
     -   `BigQuery ジョブユーザー`
-    -   `Cloud Functions 起動元` (Schedulerからの実行に必要)
+    -   `Cloud Run Invoker`（Scheduler→FunctionsのOIDC実行に必要）
 4.  出力先のGoogleスプレッドシートの「共有」設定で、このサービスアカウントのメールアドレスを追加し、「編集者」の権限を与えます。
 
 ## ローカルでの手動実行
@@ -110,7 +111,7 @@ SPREADSHEET_ID: "<Your Google Spreadsheet ID>"
 
 ### 2. Cloud Functionsのデプロイ
 
-**ASANA_ACCESS_TOKENやSLACK_BOT_TOKENは、デプロイ時に`--set-secrets`フラグを使ってSecret Managerから安全に読み込みます。**
+**ASANA_ACCESS_TOKENやSLACK_BOT_TOKENは、デプロイ時に`--set-secrets`フラグでSecret Managerから読み込みます。HTTPはOIDCで保護され、Cloud Schedulerのみが呼び出せます。**
 
 **事前準備: Secret ManagerにAsanaのトークンを保存**
 ```bash
