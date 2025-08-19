@@ -77,47 +77,61 @@ def ensure_table_exists(client: bigquery.Client):
         client.create_table(table)
         print(f"Table '{config.BQ_TABLE_FQN}' created with partitioning and clustering.")
 
-def insert_tasks(client: bigquery.Client, tasks: List[Dict[str, Any]]):
-    """タスクデータをBigQueryに挿入する。重複はtask_idでDELETE後にバルクINSERTする。"""
+def upsert_tasks_via_merge(client: bigquery.Client, tasks: List[Dict[str, Any]]):
+    """STAGING→MERGEで原子的にUPSERTする。"""
     if not tasks:
-        print("No new tasks to insert.")
+        print("No new tasks to upsert.")
         return
 
-    # 1) 事前に既存の同一 task_id を削除（UPSERT代替）
-    task_ids = [str(t.get("task_id")) for t in tasks if t.get("task_id")]
-    if task_ids:
-        delete_query = f"""
-        DELETE FROM `{config.BQ_TABLE_FQN}`
-        WHERE task_id IN UNNEST(@ids)
-        """
-        try:
-            delete_job = client.query(
-                delete_query,
-                job_config=bigquery.QueryJobConfig(
-                    query_parameters=[bigquery.ArrayQueryParameter("ids", "STRING", task_ids)]
-                ),
-            )
-            delete_job.result()
-            print(f"Deleted existing rows for {len(task_ids)} task_ids.")
-        except Exception as e:
-            # Streaming buffer での削除禁止などはスキップして append-only で継続
-            print(f"Skip delete due to error: {e}. Proceeding with insert-only (queries dedupe by task_id).")
+    dataset_ref = client.dataset(config.BQ_DATASET_ID)
+    target_ref = dataset_ref.table(config.BQ_TABLE_ID)
+    staging_table_id = "completed_tasks_staging"
+    staging_ref = dataset_ref.table(staging_table_id)
 
-    # 2) 行に inserted_at を付与し、JSONストリーミング挿入
+    # 1) 一時テーブル作成（ターゲットのスキーマを流用）
+    client.delete_table(staging_ref, not_found_ok=True)
+    target_table = client.get_table(target_ref)
+    staging_table = bigquery.Table(staging_ref, schema=target_table.schema)
+    client.create_table(staging_table)
+
+    # 2) inserted_at を付与して一時テーブルへロード
     now_ts = datetime.now(timezone.utc).isoformat()
     rows_to_insert: List[Dict[str, Any]] = []
     for t in tasks:
         row = dict(t)
         row["inserted_at"] = now_ts
         rows_to_insert.append(row)
-
-    table_ref = client.dataset(config.BQ_DATASET_ID).table(config.BQ_TABLE_ID)
-    errors = client.insert_rows_json(table=table_ref, json_rows=rows_to_insert, ignore_unknown_values=True)
+    errors = client.insert_rows_json(table=staging_ref, json_rows=rows_to_insert, ignore_unknown_values=True)
     if errors:
-        print(f"Errors during insert_rows_json: {errors}")
-        # 代表的なエラーだけ例外化
+        print(f"Errors during staging insert_rows_json: {errors}")
         raise RuntimeError(str(errors))
-    print(f"Inserted {len(rows_to_insert)} rows into {config.BQ_TABLE_FQN}.")
+
+    # 3) MERGE 実行
+    merge_sql = f"""
+    MERGE `{config.BQ_TABLE_FQN}` T
+    USING `{config.GCP_PROJECT_ID}.{config.BQ_DATASET_ID}.{staging_table_id}` S
+    ON T.task_id = S.task_id
+    WHEN MATCHED THEN UPDATE SET
+      task_name       = S.task_name,
+      project_id      = S.project_id,
+      project_name    = S.project_name,
+      assignee_name   = S.assignee_name,
+      completed_at    = S.completed_at,
+      created_at      = S.created_at,
+      due_on          = S.due_on,
+      modified_at     = S.modified_at,
+      estimated_time  = S.estimated_time,
+      actual_time     = S.actual_time,
+      actual_time_raw = S.actual_time_raw,
+      is_subtask      = S.is_subtask,
+      parent_task_id  = S.parent_task_id,
+      inserted_at     = S.inserted_at
+    WHEN NOT MATCHED THEN
+      INSERT ROW
+    """
+    client.query(merge_sql).result()
+    client.delete_table(staging_ref, not_found_ok=True)
+    print(f"Upserted {len(rows_to_insert)} rows into {config.BQ_TABLE_FQN} via MERGE.")
 
 def get_report_data(client: bigquery.Client) -> Dict[str, Iterator[Dict[str, Any]]]:
     """BigQueryからレポート用の集計データを取得する"""

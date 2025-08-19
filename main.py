@@ -7,8 +7,8 @@ from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 # インポートパスを修正
-from asana_reporter import asana, bigquery, sheets, config
-from asana_reporter.asana import asana as asana_sdk # asana.rest.ApiException をキャッチするため
+from asana_reporter import asana_io as asana, bigquery, sheets, config
+import asana as asana_sdk # PyPIのasana（例外型参照など）
 from asana_reporter.slack_notifier import (
     send_run_summary,
     send_monthly_digest,
@@ -103,7 +103,7 @@ def fetch_asana_tasks_to_bq(request: Request):
 
         if all_tasks:
             bigquery.ensure_table_exists(bq_client)
-            bigquery.insert_tasks(bq_client, all_tasks)
+            bigquery.upsert_tasks_via_merge(bq_client, all_tasks)
         else:
             print("No new or updated tasks to save.")
 

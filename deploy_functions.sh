@@ -13,7 +13,7 @@ gcloud functions deploy fetch-asana-tasks \
   --source=. \
   --entry-point=fetch_asana_tasks_to_bq \
   --trigger-http \
-  --allow-unauthenticated \
+  --no-allow-unauthenticated \
   --env-vars-file=env.yaml \
   --set-secrets=ASANA_ACCESS_TOKEN=asana-access-token:latest,SLACK_BOT_TOKEN=slack-bot-token:latest \
   --timeout=540s \
@@ -28,7 +28,7 @@ gcloud functions deploy export-to-sheets \
   --source=. \
   --entry-point=export_reports_to_sheets \
   --trigger-http \
-  --allow-unauthenticated \
+  --no-allow-unauthenticated \
   --env-vars-file=env.yaml \
   --set-secrets=ASANA_ACCESS_TOKEN=asana-access-token:latest,SLACK_BOT_TOKEN=slack-bot-token:latest \
   --timeout=540s \
@@ -43,7 +43,7 @@ EXPORT_URL=$(gcloud functions describe export-to-sheets --region=asia-northeast1
 echo "Fetch function URL: $FETCH_URL"
 echo "Export function URL: $EXPORT_URL"
 
-echo "=== Updating Cloud Scheduler Jobs ==="
+echo "=== Updating Cloud Scheduler Jobs (with OIDC) ==="
 
 # Update Cloud Scheduler job for fetch-asana-tasks
 echo "3. Updating Cloud Scheduler job for fetch-asana-tasks..."
@@ -51,6 +51,7 @@ gcloud scheduler jobs update http fetch-asana-tasks-daily \
   --location=asia-northeast1 \
   --uri="$FETCH_URL" \
   --http-method=POST \
+  --oauth-service-account-email="bigquery-to-sheets@asana-analytics-hub.iam.gserviceaccount.com" \
   --project=asana-analytics-hub
 
 # Update Cloud Scheduler job for export-to-sheets
@@ -59,6 +60,7 @@ gcloud scheduler jobs update http export-to-sheets-daily \
   --location=asia-northeast1 \
   --uri="$EXPORT_URL" \
   --http-method=POST \
+  --oauth-service-account-email="bigquery-to-sheets@asana-analytics-hub.iam.gserviceaccount.com" \
   --project=asana-analytics-hub
 
 echo "=== Resuming Cloud Scheduler Jobs ==="
