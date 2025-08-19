@@ -14,6 +14,7 @@ gcloud functions deploy fetch-asana-tasks \
   --entry-point=fetch_asana_tasks_to_bq \
   --trigger-http \
   --no-allow-unauthenticated \
+  --service-account=bigquery-to-sheets@asana-analytics-hub.iam.gserviceaccount.com \
   --env-vars-file=env.yaml \
   --set-secrets=ASANA_ACCESS_TOKEN=asana-access-token:latest,SLACK_BOT_TOKEN=slack-bot-token:latest \
   --timeout=540s \
@@ -30,6 +31,7 @@ gcloud functions deploy export-to-sheets \
   --entry-point=export_reports_to_sheets \
   --trigger-http \
   --no-allow-unauthenticated \
+  --service-account=bigquery-to-sheets@asana-analytics-hub.iam.gserviceaccount.com \
   --env-vars-file=env.yaml \
   --set-secrets=ASANA_ACCESS_TOKEN=asana-access-token:latest,SLACK_BOT_TOKEN=slack-bot-token:latest \
   --timeout=540s \
@@ -46,6 +48,7 @@ gcloud functions deploy snapshot-open-tasks \
   --entry-point=snapshot_open_tasks \
   --trigger-http \
   --no-allow-unauthenticated \
+  --service-account=bigquery-to-sheets@asana-analytics-hub.iam.gserviceaccount.com \
   --env-vars-file=env.yaml \
   --set-secrets=ASANA_ACCESS_TOKEN=asana-access-token:latest,SLACK_BOT_TOKEN=slack-bot-token:latest \
   --timeout=540s \
@@ -92,7 +95,7 @@ if [ $? -eq 0 ]; then
     --location=asia-northeast1 \
     --uri="$SNAPSHOT_URL" \
     --http-method=POST \
-    --schedule="0 22 * * *" \
+    --schedule="0 7 * * *" \
     --time-zone="Asia/Tokyo" \
     --oidc-service-account-email="bigquery-to-sheets@asana-analytics-hub.iam.gserviceaccount.com" \
     --oidc-token-audience="$SNAPSHOT_URL" \
@@ -102,7 +105,7 @@ else
     --location=asia-northeast1 \
     --uri="$SNAPSHOT_URL" \
     --http-method=POST \
-    --schedule="0 22 * * *" \
+    --schedule="0 7 * * *" \
     --time-zone="Asia/Tokyo" \
     --oidc-service-account-email="bigquery-to-sheets@asana-analytics-hub.iam.gserviceaccount.com" \
     --oidc-token-audience="$SNAPSHOT_URL" \
@@ -128,14 +131,30 @@ gcloud scheduler jobs resume snapshot-open-tasks-daily \
   --project=asana-analytics-hub
 
 echo "=== Granting Cloud Run Invoker to Scheduler SA ==="
-for SVC in fetch-asana-tasks export-to-sheets snapshot-open-tasks; do
-  URL=$(gcloud functions describe "$SVC" --region=asia-northeast1 --project=asana-analytics-hub --gen2 --format="value(serviceConfig.uri)")
-  SERVICE_NAME=$(echo "$URL" | sed -E 's#https://(.+)-(.+)-(.+)-a.run.app#\1#')
+for SERVICE_NAME in fetch-asana-tasks export-to-sheets snapshot-open-tasks; do
   gcloud run services add-iam-policy-binding "$SERVICE_NAME" \
     --region=asia-northeast1 \
     --project=asana-analytics-hub \
     --member="serviceAccount:bigquery-to-sheets@asana-analytics-hub.iam.gserviceaccount.com" \
-    --role="roles/run.invoker"
+    --role="roles/run.invoker" \
+    --platform=managed
+done
+
+# Ensure least-privilege IAM for runtime SA and secrets (idempotent)
+echo "=== Ensuring least-privilege IAM for runtime SA ==="
+RUNTIME_SA="bigquery-to-sheets@asana-analytics-hub.iam.gserviceaccount.com"
+gcloud projects add-iam-policy-binding asana-analytics-hub \
+  --member="serviceAccount:${RUNTIME_SA}" \
+  --role="roles/bigquery.dataEditor" --quiet || true
+gcloud projects add-iam-policy-binding asana-analytics-hub \
+  --member="serviceAccount:${RUNTIME_SA}" \
+  --role="roles/bigquery.jobUser" --quiet || true
+# Secret-level accessor (avoid project-wide)
+for SECRET in asana-access-token slack-bot-token; do
+  gcloud secrets add-iam-policy-binding "$SECRET" \
+    --project=asana-analytics-hub \
+    --member="serviceAccount:${RUNTIME_SA}" \
+    --role="roles/secretmanager.secretAccessor" --quiet || true
 done
 
 echo "=== Deployment Complete ==="

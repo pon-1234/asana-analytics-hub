@@ -351,3 +351,39 @@ def get_report_data(client: bigquery.Client) -> Dict[str, Iterator[Dict[str, Any
         'assignee': client.query(assignee_query).result(),
         'project_assignee': client.query(project_assignee_query).result()
     }
+
+def ensure_dim_tables(client: bigquery.Client):
+    """Ensure dim_projects and dim_users tables exist for normalization and Slack DM.
+    Minimal schema to start with.
+    """
+    dataset_ref = client.dataset(config.BQ_DATASET_ID)
+    # dim_projects
+    proj_ref = dataset_ref.table("dim_projects")
+    try:
+        client.get_table(proj_ref)
+    except NotFound:
+        schema = [
+            bigquery.SchemaField("project_gid", "STRING", mode="REQUIRED"),
+            bigquery.SchemaField("project_name", "STRING"),
+            bigquery.SchemaField("active", "BOOL"),
+            bigquery.SchemaField("created_at", "TIMESTAMP"),
+            bigquery.SchemaField("updated_at", "TIMESTAMP"),
+        ]
+        client.create_table(bigquery.Table(proj_ref, schema=schema))
+        print("Table dim_projects created.")
+    # dim_users
+    user_ref = dataset_ref.table("dim_users")
+    try:
+        client.get_table(user_ref)
+    except NotFound:
+        schema = [
+            bigquery.SchemaField("assignee_gid", "STRING", mode="REQUIRED"),
+            bigquery.SchemaField("assignee_name", "STRING"),
+            bigquery.SchemaField("slack_user_id", "STRING"),
+            bigquery.SchemaField("work_hours_per_day", "FLOAT"),
+            bigquery.SchemaField("active", "BOOL"),
+            bigquery.SchemaField("created_at", "TIMESTAMP"),
+            bigquery.SchemaField("updated_at", "TIMESTAMP"),
+        ]
+        client.create_table(bigquery.Table(user_ref, schema=schema))
+        print("Table dim_users created.")

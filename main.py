@@ -57,6 +57,7 @@ def fetch_asana_tasks_to_bq(request: Request):
         # Ensure base structures
         bigquery.ensure_table_exists(bq_client)
         bigquery.ensure_views(bq_client)
+        bigquery.ensure_dim_tables(bq_client)
         api_client, _, _ = asana.get_asana_client()
 
         # リクエストパラメータ（任意）
@@ -151,6 +152,7 @@ def export_reports_to_sheets(request: Request):
         
         bq_client = bigquery.get_bigquery_client()
         bigquery.ensure_views(bq_client)
+        bigquery.ensure_dim_tables(bq_client)
         report_data = bigquery.get_report_data(bq_client)
 
         sheets_service = sheets.get_sheets_service()
@@ -190,6 +192,7 @@ def snapshot_open_tasks(request: Request):
         config.validate_config()
         bq_client = bigquery.get_bigquery_client()
         bigquery.ensure_open_tasks_snapshot_table(bq_client)
+        bigquery.ensure_dim_tables(bq_client)
         api_client, _, _ = asana.get_asana_client()
 
         projects = asana.get_all_projects(api_client)
@@ -225,8 +228,9 @@ def snapshot_open_tasks(request: Request):
 
         # Optional: notify summary to Slack channel (prototype)
         try:
-            from asana_reporter.slack_notifier import send_open_tasks_summary
+            from asana_reporter.slack_notifier import send_open_tasks_summary, send_dm_to_assignees_for_open_tasks
             send_open_tasks_summary(bq_client, jst_today)
+            send_dm_to_assignees_for_open_tasks(bq_client, jst_today)
         except Exception as e:
             print(f"Slack summary skipped: {e}")
 
