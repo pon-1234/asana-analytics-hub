@@ -130,8 +130,8 @@ def send_monthly_digest(bq: bigquery.Client, month: Optional[str] = None, top_n:
     SELECT
       {month_expr} AS month,
       COUNT(task_id) AS tasks_count,
-      SUM(IFNULL(actual_time,0.0)) AS total_actual_hours,
-      SUM(IFNULL(estimated_time,0.0))/60.0 AS total_estimated_hours
+      SUM(IFNULL(actual_minutes,0.0))/60.0 AS total_actual_hours,
+      SUM(IFNULL(estimated_minutes,0.0))/60.0 AS total_estimated_hours
     FROM unique_tasks
     WHERE FORMAT_TIMESTAMP('%Y-%m', completed_at, 'Asia/Tokyo') = {month_expr}
     """
@@ -139,7 +139,7 @@ def send_monthly_digest(bq: bigquery.Client, month: Optional[str] = None, top_n:
     top_project_sql = base + f"""
     SELECT project_name,
            COUNT(task_id) AS tasks,
-           SUM(IFNULL(actual_time,0.0)) AS hours
+           SUM(IFNULL(actual_minutes,0.0))/60.0 AS hours
     FROM unique_tasks
     WHERE FORMAT_TIMESTAMP('%Y-%m', completed_at, 'Asia/Tokyo') = {month_expr}
     GROUP BY project_name
@@ -150,7 +150,7 @@ def send_monthly_digest(bq: bigquery.Client, month: Optional[str] = None, top_n:
     top_assignee_sql = base + f"""
     SELECT assignee_name,
            COUNT(task_id) AS tasks,
-           SUM(IFNULL(actual_time,0.0)) AS hours
+           SUM(IFNULL(actual_minutes,0.0))/60.0 AS hours
     FROM unique_tasks
     WHERE assignee_name IS NOT NULL AND assignee_name != ''
       AND FORMAT_TIMESTAMP('%Y-%m', completed_at, 'Asia/Tokyo') = {month_expr}
@@ -238,7 +238,7 @@ def send_daily_digest(bq: bigquery.Client, target_date: Optional[str] = None, to
       SELECT
         DATE(completed_at, '{tz}') AS d,
         COUNT(task_id) AS tasks,
-        SUM(IFNULL(actual_time,0.0)) AS hours
+        SUM(IFNULL(actual_minutes,0.0))/60.0 AS hours
       FROM unique_tasks
       WHERE DATE(completed_at, '{tz}') BETWEEN DATE_SUB({y_expr}, INTERVAL 30 DAY) AND DATE_SUB({y_expr}, INTERVAL 1 DAY)
       GROUP BY d
@@ -253,7 +253,7 @@ def send_daily_digest(bq: bigquery.Client, target_date: Optional[str] = None, to
     """
 
     top_projects_sql = base + f"""
-    SELECT project_name, COUNT(task_id) AS tasks, SUM(IFNULL(actual_time,0.0)) AS hours
+    SELECT project_name, COUNT(task_id) AS tasks, SUM(IFNULL(actual_minutes,0.0))/60.0 AS hours
     FROM unique_tasks
     WHERE DATE(completed_at, '{tz}') = {y_expr}
     GROUP BY project_name
@@ -262,7 +262,7 @@ def send_daily_digest(bq: bigquery.Client, target_date: Optional[str] = None, to
     """
 
     top_assignees_sql = base + f"""
-    SELECT assignee_name, COUNT(task_id) AS tasks, SUM(IFNULL(actual_time,0.0)) AS hours
+    SELECT assignee_name, COUNT(task_id) AS tasks, SUM(IFNULL(actual_minutes,0.0))/60.0 AS hours
     FROM unique_tasks
     WHERE assignee_name IS NOT NULL AND assignee_name != ''
       AND DATE(completed_at, '{tz}') = {y_expr}
@@ -280,7 +280,7 @@ def send_daily_digest(bq: bigquery.Client, target_date: Optional[str] = None, to
 
     # 担当者別（昨日）
     y_assignee_sql = base + f"""
-    SELECT assignee_name, COUNT(task_id) AS tasks, SUM(IFNULL(actual_time,0.0)) AS hours
+    SELECT assignee_name, COUNT(task_id) AS tasks, SUM(IFNULL(actual_minutes,0.0))/60.0 AS hours
     FROM unique_tasks
     WHERE assignee_name IS NOT NULL AND assignee_name != ''
       AND DATE(completed_at, '{tz}') = {y_expr}
@@ -289,7 +289,7 @@ def send_daily_digest(bq: bigquery.Client, target_date: Optional[str] = None, to
 
     # 担当者別の営業日ベースライン（直近7営業日平均）
     hist_assignee_daily_sql = base + f"""
-    SELECT assignee_name, d, COUNT(task_id) AS tasks, SUM(IFNULL(actual_time,0.0)) AS hours
+    SELECT assignee_name, d, COUNT(task_id) AS tasks, SUM(IFNULL(actual_minutes,0.0))/60.0 AS hours
     FROM unique_tasks
     CROSS JOIN UNNEST([DATE(completed_at, '{tz}')]) AS d
     WHERE assignee_name IS NOT NULL AND assignee_name != ''
