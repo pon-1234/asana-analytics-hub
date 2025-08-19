@@ -87,7 +87,7 @@ The codebase follows a modular architecture with clear separation of concerns:
 
 - **config.py**: Central configuration management. Validates environment variables on import and provides constants for BigQuery dataset/table names. Uses `.env` for local development and runtime environment variables for Cloud Functions.
 
-- **asana.py**: All Asana API interactions. Key functions:
+- **asana_io.py**: All Asana API interactions. Key functions:
   - `get_asana_client()`: Returns authenticated Asana client
   - `get_all_projects()`: Fetches all projects from workspace
   - `get_completed_tasks_for_project()`: Fetches and parses completed tasks with custom time fields
@@ -156,7 +156,7 @@ Table: `asana_analytics.completed_tasks`
 ### Debugging Commands
 ```bash
 # Test Asana connection
-PYTHONPATH=. python3 -c "from asana_reporter import asana; api_client, _, _ = asana.get_asana_client(); projects = asana.get_all_projects(api_client); print(f'Found {len(projects)} projects')"
+PYTHONPATH=. python3 -c "from asana_reporter import asana_io as asana; api_client, _, _ = asana.get_asana_client(); projects = asana.get_all_projects(api_client); print(f'Found {len(projects)} projects')"
 
 # Check BigQuery table
 PYTHONPATH=. python3 tools/check_bigquery.py
