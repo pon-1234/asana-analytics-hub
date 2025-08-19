@@ -4,6 +4,7 @@ from typing import List, Dict, Any
 import functions_framework
 from flask import Request
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 # インポートパスを修正
 from asana_reporter import asana, bigquery, sheets, config
@@ -150,7 +151,14 @@ def export_reports_to_sheets(request: Request):
         print("--- BigQuery to Sheets export finished successfully ---")
         # Slack: monthly digest (non-fatal)
         try:
-            send_monthly_digest(bq_client)
+            # optional request override
+            request_json = request.get_json(silent=True) if request is not None else None
+            force_monthly = bool(request_json.get('force_monthly_digest', False)) if request_json else False
+            jst_now = datetime.now(ZoneInfo("Asia/Tokyo"))
+            if force_monthly or jst_now.day == 1:
+                send_monthly_digest(bq_client)
+            else:
+                print("Skipping monthly digest (not first day JST).")
         except Exception as e:
             print(f"Slack monthly digest skipped due to error: {e}")
         return "OK", 200

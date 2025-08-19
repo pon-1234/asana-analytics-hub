@@ -241,8 +241,9 @@ def send_daily_digest(bq: bigquery.Client, target_date: Optional[str] = None, to
     """
 
     # 直近7営業日の平均（週末除外）
+    # Append CTEs to the existing WITH unique_tasks ... using comma, not a second WITH
     w_sql = base + f"""
-    WITH daily AS (
+    , daily AS (
       SELECT
         DATE(completed_at, '{tz}') AS d,
         COUNT(task_id) AS tasks,
