@@ -576,40 +576,6 @@ def send_open_tasks_summary(bq: bigquery.Client, snapshot_date: Optional[str] = 
     _post_message(blocks, text_fallback="未完了タスク スナップショット")
 
 
-def send_dm_to_assignees_for_open_tasks(bq: bigquery.Client, snapshot_date: Optional[str] = None, max_tasks: int = 10) -> None:
-    """Prototype: Send each assignee a DM listing their overdue/open tasks count.
-
-    Requires dim_users.slack_user_id mapping. Non-fatal if not configured.
-    """
-    if not _slack_client:
-        return
-    tz = "Asia/Tokyo"
-    date_expr = f"DATE '{snapshot_date}'" if snapshot_date else f"CURRENT_DATE('{tz}')"
-    base = f"""
-    WITH s AS (
-      SELECT * FROM `{config.GCP_PROJECT_ID}.{config.BQ_DATASET_ID}.open_tasks_snapshot`
-      WHERE snapshot_date = {date_expr}
-    )
-    SELECT u.assignee_name, u.assignee_gid, u.slack_user_id,
-           COUNTIF(s.is_overdue) AS overdue, COUNT(1) AS open
-    FROM `{config.GCP_PROJECT_ID}.{config.BQ_DATASET_ID}.dim_users` u
-    LEFT JOIN s ON s.assignee_gid = u.assignee_gid
-    WHERE u.active IS TRUE
-    GROUP BY assignee_name, assignee_gid, slack_user_id
-    HAVING slack_user_id IS NOT NULL AND slack_user_id != ''
-    ORDER BY overdue DESC, open DESC
-    """
-    rows = list(bq.query(base).result())
-    for r in rows:
-        channel_id = r.slack_user_id
-        if not channel_id:
-            continue
-        title = f"*⏰ 未完了タスク — {snapshot_date or '(today JST)'}*"
-        blocks: List[Dict[str, Any]] = [
-            {"type": "section", "text": {"type": "mrkdwn", "text": title}},
-            {"type": "section", "fields": [
-                {"type": "mrkdwn", "text": f"*あなたの未完了: *\n{int(getattr(r, 'open', 0))}"},
-                {"type": "mrkdwn", "text": f"*期日超過: *\n{int(getattr(r, 'overdue', 0))}"},
-            ]},
-        ]
-        _post_message_to(channel_id, blocks, text_fallback="未完了タスク通知")
+def send_dm_to_assignees_for_open_tasks(*args, **kwargs) -> None:
+    """(disabled) DM機能は運用対象外のため no-op。"""
+    return

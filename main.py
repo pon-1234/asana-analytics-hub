@@ -228,9 +228,8 @@ def snapshot_open_tasks(request: Request):
 
         # Optional: notify summary to Slack channel (prototype)
         try:
-            from asana_reporter.slack_notifier import send_open_tasks_summary, send_dm_to_assignees_for_open_tasks
+            from asana_reporter.slack_notifier import send_open_tasks_summary
             send_open_tasks_summary(bq_client, jst_today)
-            send_dm_to_assignees_for_open_tasks(bq_client, jst_today)
         except Exception as e:
             print(f"Slack summary skipped: {e}")
 
