@@ -1,5 +1,6 @@
 import asana
 import time
+import requests
 from typing import List, Dict, Any, Tuple
 
 from . import config
@@ -366,4 +367,65 @@ def get_open_tasks_for_project(
                 })
 
     return open_rows
+
+
+def get_time_tracking_entries_between(
+    start_on: str,
+    end_on: str,
+    workspace_gid: str,
+    user_gid: str | None = None,
+    project_gid: str | None = None,
+    page_size: int = 100,
+) -> List[Dict[str, Any]]:
+    """/time_tracking_entries を使って期間内のエントリを取得（entered_onベース）。"""
+    url = "https://app.asana.com/api/1.0/time_tracking_entries"
+    from . import config as _cfg
+    headers = {"Authorization": f"Bearer {_cfg.ASANA_ACCESS_TOKEN}"}
+    params = {
+        "start_on": start_on,
+        "end_on": end_on,
+        "limit": page_size,
+        "opt_fields": "gid,entered_on,duration_minutes,created_at,modified_at,task.gid,task.name,user.name,attributed_project.gid,attributed_project.name",
+        "workspace": workspace_gid,
+    }
+    if user_gid:
+        params["user"] = user_gid
+    if project_gid:
+        params["attributed_project"] = project_gid
+
+    entries: List[Dict[str, Any]] = []
+    offset = None
+    while True:
+        q = dict(params)
+        if offset:
+            q["offset"] = offset
+        resp = requests.get(url, headers=headers, params=q, timeout=30)
+        resp.raise_for_status()
+        body = resp.json()
+        entries.extend(body.get("data", []))
+        offset = (body.get("next_page") or {}).get("offset")
+        if not offset:
+            break
+    return entries
+
+
+def format_entries_for_bq(raw_entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    for e in raw_entries:
+        task = e.get("task") or {}
+        user = e.get("user") or {}
+        proj = e.get("attributed_project") or {}
+        rows.append({
+            "entry_id": e.get("gid"),
+            "task_id": task.get("gid"),
+            "task_name": task.get("name"),
+            "project_id": proj.get("gid"),
+            "project_name": proj.get("name"),
+            "user_name": user.get("name"),
+            "entered_on": e.get("entered_on"),
+            "duration_minutes": e.get("duration_minutes"),
+            "created_at": e.get("created_at"),
+            "modified_at": e.get("modified_at"),
+        })
+    return rows
 

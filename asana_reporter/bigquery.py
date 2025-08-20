@@ -232,6 +232,65 @@ def insert_open_tasks_snapshot(client: bigquery.Client, rows: List[Dict[str, Any
         raise RuntimeError(str(errors))
     print(f"Inserted {len(rows)} rows into open_tasks_snapshot.")
 
+def ensure_time_entries_table(client: bigquery.Client):
+    dataset_ref = client.dataset(config.BQ_DATASET_ID)
+    table_ref = dataset_ref.table("time_entries")
+    try:
+        client.get_table(table_ref)
+        print("Table time_entries already exists.")
+        return
+    except NotFound:
+        schema = [
+            bigquery.SchemaField("entry_id", "STRING", mode="REQUIRED"),
+            bigquery.SchemaField("task_id", "STRING"),
+            bigquery.SchemaField("task_name", "STRING"),
+            bigquery.SchemaField("project_id", "STRING"),
+            bigquery.SchemaField("project_name", "STRING"),
+            bigquery.SchemaField("user_name", "STRING"),
+            bigquery.SchemaField("entered_on", "DATE"),
+            bigquery.SchemaField("duration_minutes", "FLOAT"),
+            bigquery.SchemaField("duration_hours", "FLOAT"),
+            bigquery.SchemaField("created_at", "TIMESTAMP"),
+            bigquery.SchemaField("modified_at", "TIMESTAMP"),
+            bigquery.SchemaField("inserted_at", "TIMESTAMP", mode="REQUIRED"),
+        ]
+        table = bigquery.Table(table_ref, schema=schema)
+        table.clustering_fields = ["entered_on", "project_name", "user_name"]
+        client.create_table(table)
+        print("Created table time_entries.")
+
+def insert_time_entries(client: bigquery.Client, rows: List[Dict[str, Any]]):
+    if not rows:
+        print("No time entries to insert.")
+        return
+    # Upsert by deleting existing entry_ids, then insert
+    ids = [r["entry_id"] for r in rows if r.get("entry_id")]
+    if ids:
+        delete_query = f"DELETE FROM `{config.GCP_PROJECT_ID}.{config.BQ_DATASET_ID}.time_entries` WHERE entry_id IN UNNEST(@ids)"
+        try:
+            client.query(
+                delete_query,
+                job_config=bigquery.QueryJobConfig(
+                    query_parameters=[bigquery.ArrayQueryParameter("ids", "STRING", ids)]
+                ),
+            ).result()
+        except Exception as e:
+            print(f"Skip delete time_entries: {e}")
+
+    now_ts = datetime.now(timezone.utc).isoformat()
+    for r in rows:
+        r["inserted_at"] = now_ts
+        try:
+            r["duration_hours"] = (float(r.get("duration_minutes") or 0.0)) / 60.0
+        except Exception:
+            r["duration_hours"] = 0.0
+
+    table_ref = client.dataset(config.BQ_DATASET_ID).table("time_entries")
+    errors = client.insert_rows_json(table_ref, rows, ignore_unknown_values=True)
+    if errors:
+        raise RuntimeError(str(errors))
+    print(f"Inserted {len(rows)} rows into time_entries.")
+
 def upsert_tasks_via_merge(client: bigquery.Client, tasks: List[Dict[str, Any]]):
     """STAGING→MERGEで原子的にUPSERTする。"""
     if not tasks:

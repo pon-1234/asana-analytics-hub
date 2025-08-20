@@ -118,6 +118,25 @@ def fetch_asana_tasks_to_bq(request: Request):
         except Exception as e:
             print(f"Non-fatal: post-processing skipped/failed: {e}")
 
+        # ▼ 追加: 昨日の time_tracking_entries を取り込み
+        try:
+            from datetime import timedelta
+            jst = ZoneInfo("Asia/Tokyo")
+            jst_today = datetime.now(jst).date()
+            y = (jst_today - timedelta(days=1)).strftime("%Y-%m-%d")
+            raw_entries = asana.get_time_tracking_entries_between(
+                start_on=y, end_on=y, workspace_gid=config.ASANA_WORKSPACE_ID
+            )
+            if raw_entries:
+                rows = asana.format_entries_for_bq(raw_entries)
+                bigquery.ensure_time_entries_table(bq_client)
+                bigquery.insert_time_entries(bq_client, rows)
+                print(f"Time entries inserted for {y}: {len(rows)} rows")
+            else:
+                print(f"No time entries found for {y}")
+        except Exception as e:
+            print(f"Time entries ingestion skipped due to error: {e}")
+
         print("--- Asana to BigQuery sync finished successfully ---")
         # Slack: health summary + daily digest (non-fatal)
         try:

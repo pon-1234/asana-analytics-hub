@@ -6,3 +6,4 @@ google-auth-httplib2
 pandas
 functions-framework
 slack_sdk
+requests

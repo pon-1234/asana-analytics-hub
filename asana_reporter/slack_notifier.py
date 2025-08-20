@@ -210,7 +210,7 @@ def send_monthly_digest(bq: bigquery.Client, month: Optional[str] = None, top_n:
 
 
 def send_daily_digest(bq: bigquery.Client, target_date: Optional[str] = None, top_n: int = 5) -> None:
-    """Post a daily digest for yesterday (JST) or specified YYYY-MM-DD."""
+    """改良版: 昨日がゼロ件/ゼロ時間のときは誤警報を出さず、MTDにフォールバック。完了日ベース。"""
     tz = "Asia/Tokyo"
     y_expr = f"DATE '{target_date}'" if target_date else f"DATE_SUB(CURRENT_DATE('{tz}'), INTERVAL 1 DAY)"
 
@@ -222,6 +222,7 @@ def send_daily_digest(bq: bigquery.Client, target_date: Optional[str] = None, to
     )
     """
 
+    # 昨日の KPI（minutes→hours）
     y_sql = base + f"""
     SELECT
       COUNT(task_id) AS tasks_count,
@@ -230,15 +231,16 @@ def send_daily_digest(bq: bigquery.Client, target_date: Optional[str] = None, to
     FROM unique_tasks
     WHERE DATE(completed_at, '{tz}') = {y_expr}
     """
+    y = next(iter(bq.query(y_sql).result()), None)
+    total_hours = float(getattr(y, "total_hours", 0.0) or 0.0) if y else 0.0
+    tasks_count = int(getattr(y, "tasks_count", 0) or 0) if y else 0
 
     # 直近7営業日の平均（週末除外）
-    # Append CTEs to the existing WITH unique_tasks ... using comma, not a second WITH
     w_sql = base + f"""
     , daily AS (
-      SELECT
-        DATE(completed_at, '{tz}') AS d,
-        COUNT(task_id) AS tasks,
-        SUM(IFNULL(actual_minutes,0.0))/60.0 AS hours
+      SELECT DATE(completed_at, '{tz}') AS d,
+             COUNT(task_id) AS tasks,
+             SUM(IFNULL(actual_minutes,0.0))/60.0 AS hours
       FROM unique_tasks
       WHERE DATE(completed_at, '{tz}') BETWEEN DATE_SUB({y_expr}, INTERVAL 30 DAY) AND DATE_SUB({y_expr}, INTERVAL 1 DAY)
       GROUP BY d
@@ -251,7 +253,28 @@ def send_daily_digest(bq: bigquery.Client, target_date: Optional[str] = None, to
     )
     SELECT AVG(tasks) AS avg_tasks, AVG(hours) AS avg_hours FROM business7
     """
+    w_iter = list(bq.query(w_sql).result())
+    w = w_iter[0] if w_iter else None
+    avg_tasks = float(getattr(w, "avg_tasks", 0.0) or 0.0) if w else 0.0
+    avg_hours = float(getattr(w, "avg_hours", 0.0) or 0.0) if w else 0.0
 
+    def pct(a: Optional[float], b: Optional[float]) -> Optional[float]:
+        if not b:
+            return None
+        try:
+            return round(((float(a or 0.0) - float(b or 0.0)) / float(b)) * 100.0, 1)
+        except Exception:
+            return None
+
+    # 小さい基準は無視
+    tasks_vs = pct(tasks_count, avg_tasks) if avg_tasks >= 1.0 else None
+    hours_vs = pct(total_hours, avg_hours) if avg_hours >= 1.0 else None
+    warn = (
+        (hours_vs is not None and abs(hours_vs) >= 50) or
+        (tasks_vs is not None and abs(tasks_vs) >= 50)
+    )
+
+    # Top（昨日）
     top_projects_sql = base + f"""
     SELECT project_name, COUNT(task_id) AS tasks, SUM(IFNULL(actual_minutes,0.0))/60.0 AS hours
     FROM unique_tasks
@@ -260,7 +283,6 @@ def send_daily_digest(bq: bigquery.Client, target_date: Optional[str] = None, to
     ORDER BY hours DESC
     LIMIT {top_n}
     """
-
     top_assignees_sql = base + f"""
     SELECT assignee_name, COUNT(task_id) AS tasks, SUM(IFNULL(actual_minutes,0.0))/60.0 AS hours
     FROM unique_tasks
@@ -270,130 +292,63 @@ def send_daily_digest(bq: bigquery.Client, target_date: Optional[str] = None, to
     ORDER BY hours DESC
     LIMIT {top_n}
     """
+    projects = list(bq.query(top_projects_sql).result())
+    assignees = list(bq.query(top_assignees_sql).result())
 
+    # MTD（フォールバック用）
     mtd_sql = base + f"""
     SELECT
-      SUM(IF(DATE(completed_at, '{tz}') BETWEEN DATE_TRUNC({y_expr}, MONTH) AND {y_expr}, IFNULL(actual_minutes,0.0), 0.0)) AS mtd_hours,
+      SUM(IF(DATE(completed_at, '{tz}') BETWEEN DATE_TRUNC({y_expr}, MONTH) AND {y_expr}, IFNULL(actual_minutes,0.0), 0.0))/60.0 AS mtd_hours,
       COUNTIF(DATE(completed_at, '{tz}') BETWEEN DATE_TRUNC({y_expr}, MONTH) AND {y_expr}) AS mtd_tasks
     FROM unique_tasks
     """
-
-    # 担当者別（昨日）
-    y_assignee_sql = base + f"""
-    SELECT assignee_name, COUNT(task_id) AS tasks, SUM(IFNULL(actual_minutes,0.0))/60.0 AS hours
-    FROM unique_tasks
-    WHERE assignee_name IS NOT NULL AND assignee_name != ''
-      AND DATE(completed_at, '{tz}') = {y_expr}
-    GROUP BY assignee_name
-    """
-
-    # 担当者別の営業日ベースライン（直近7営業日平均）
-    hist_assignee_daily_sql = base + f"""
-    SELECT assignee_name, d, COUNT(task_id) AS tasks, SUM(IFNULL(actual_minutes,0.0))/60.0 AS hours
-    FROM unique_tasks
-    CROSS JOIN UNNEST([DATE(completed_at, '{tz}')]) AS d
-    WHERE assignee_name IS NOT NULL AND assignee_name != ''
-      AND DATE(completed_at, '{tz}') BETWEEN DATE_SUB({y_expr}, INTERVAL 30 DAY) AND DATE_SUB({y_expr}, INTERVAL 1 DAY)
-    GROUP BY assignee_name, d
-    HAVING EXTRACT(DAYOFWEEK FROM d) NOT IN (1,7)
-    """
-
-    y = next(iter(bq.query(y_sql).result()), None)
-    w_iter = list(bq.query(w_sql).result())
-    w = w_iter[0] if w_iter else None
-    projects = list(bq.query(top_projects_sql).result())
-    assignees = list(bq.query(top_assignees_sql).result())
     mtd = next(iter(bq.query(mtd_sql).result()), None)
-    # 担当者別昨日/履歴
-    y_by_assignee = list(bq.query(y_assignee_sql).result())
-    hist_assignee_daily = list(bq.query(hist_assignee_daily_sql).result())
+    mtd_hours = float(getattr(mtd, "mtd_hours", 0.0) or 0.0) if mtd else 0.0
+    mtd_tasks = int(getattr(mtd, "mtd_tasks", 0) or 0) if mtd else 0
 
-    def pct(a: Optional[float], b: Optional[float]) -> Optional[float]:
-        if b is None or b == 0:
-            return None
-        a_val = float(a or 0.0)
-        b_val = float(b or 0.0)
-        return round((a_val - b_val) / b_val * 100.0, 1)
-
-    tasks_vs = pct(getattr(y, "tasks_count", 0), getattr(w, "avg_tasks", None) if w else None)
-    hours_vs = pct(getattr(y, "total_hours", 0.0), getattr(w, "avg_hours", None) if w else None)
-    warn = (hours_vs is not None and abs(hours_vs) >= 50) or (tasks_vs is not None and abs(tasks_vs) >= 50)
-
-    projects_tbl = _as_mrkdwn_table(
-        [{"project": r.project_name, "hours": round((r.hours or 0.0), 2), "tasks": r.tasks} for r in projects],
-        ["project", "hours", "tasks"],
-        ["プロジェクト", "実績h", "件数"],
-    )
-    assignees_tbl = _as_mrkdwn_table(
-        [{"assignee": r.assignee_name, "hours": round((r.hours or 0.0), 2), "tasks": r.tasks} for r in assignees],
-        ["assignee", "hours", "tasks"],
-        ["担当者", "実績h", "件数"],
-    )
-
-    # Resolve the target date string for the title
+    # 日付文字列
     day_row = next(iter(bq.query(f"SELECT CAST({y_expr} AS STRING) AS d").result()), None)
     day_str = getattr(day_row, "d", "(date)")
 
-    title = f"*🗓️ 日次ダイジェスト — {day_str}*" + ("  ⚠️" if warn else "")
+    # 完了ゼロ日のフォールバック
+    if tasks_count == 0 and total_hours == 0.0:
+        title = f"*🗓️ 日次ダイジェスト — {day_str}（完了なし：MTDスナップショット）*"
+        parent_blocks = [
+            {"type": "section", "text": {"type": "mrkdwn", "text": title}},
+            {
+                "type": "section",
+                "fields": [
+                    {"type": "mrkdwn", "text": f"*MTD 実績:*\\n{round(mtd_hours, 2)}h"},
+                    {"type": "mrkdwn", "text": f"*MTD 件数:*\\n{mtd_tasks}"},
+                ],
+            },
+            {"type": "context", "elements": [{"type": "mrkdwn", "text": f"データ: `{config.GCP_PROJECT_ID}.{config.BQ_DATASET_ID}.v_unique_tasks`  / TZ: {tz} / *完了日ベース*"}]},
+        ]
+        ql = _quick_links_elements()
+        if ql:
+            parent_blocks.append({"type": "context", "elements": ql})
+        _post_message(parent_blocks, text_fallback=f"{day_str} 日次（MTDのみ）")
+        return
+
+    # 通常表示
     baseline = (
         f"（直近7日平均比:  件数 {tasks_vs:+.1f}% / 時間 {hours_vs:+.1f}%）"
         if (tasks_vs is not None and hours_vs is not None) else ""
     )
-
-    total_hours = getattr(y, "total_hours", 0.0) if y else 0.0
-    tasks_count = getattr(y, "tasks_count", 0) if y else 0
-    estimated_hours = getattr(y, "estimated_hours", 0.0) if y else 0.0
-    mtd_hours = getattr(mtd, "mtd_hours", 0.0) if mtd else 0.0
-    mtd_tasks = getattr(mtd, "mtd_tasks", 0) if mtd else 0
-
-    # None を安全に数値へ
-    try:
-        total_hours = float(total_hours or 0.0)
-    except Exception:
-        total_hours = 0.0
-    try:
-        estimated_hours = float(estimated_hours or 0.0)
-    except Exception:
-        estimated_hours = 0.0
-    try:
-        mtd_hours = float(mtd_hours or 0.0)
-    except Exception:
-        mtd_hours = 0.0
-    try:
-        tasks_count = int(tasks_count or 0)
-    except Exception:
-        tasks_count = 0
-    try:
-        mtd_tasks = int(mtd_tasks or 0)
-    except Exception:
-        mtd_tasks = 0
-
-    ratio_str = (
-        f"{round((total_hours / estimated_hours) * 100.0, 1)}%" if estimated_hours and estimated_hours > 0 else "0%"
-    )
-
-    # 親メッセージ（KPI）
+    title = f"*🗓️ 日次ダイジェスト — {day_str}*" + ("  ⚠️" if warn else "")
     parent_blocks: List[Dict[str, Any]] = [
         {"type": "section", "text": {"type": "mrkdwn", "text": title}},
         {
             "type": "section",
             "fields": [
-                {"type": "mrkdwn", "text": f"*昨日の実績時間:*\n{round(total_hours, 2)}h"},
-                {"type": "mrkdwn", "text": f"*昨日の完了タスク数:*\n{tasks_count}"},
-                {"type": "mrkdwn", "text": f"*昨日の見積合計:*\n{round(estimated_hours, 2)}h"},
-                {"type": "mrkdwn", "text": f"*実績/見積:*\n{ratio_str}"},
+                {"type": "mrkdwn", "text": f"*昨日の実績時間:*\\n{round(total_hours, 2)}h"},
+                {"type": "mrkdwn", "text": f"*昨日の完了タスク数:*\\n{tasks_count}"},
+                {"type": "mrkdwn", "text": f"*MTD 実績:*\\n{round(mtd_hours, 2)}h"},
+                {"type": "mrkdwn", "text": f"*MTD 件数:*\\n{mtd_tasks}"},
             ],
         },
         {"type": "context", "elements": [{"type": "mrkdwn", "text": baseline}]},
-        {"type": "divider"},
-        {
-            "type": "section",
-            "fields": [
-                {"type": "mrkdwn", "text": "*MTD 実績:*\n" + f"{round(mtd_hours, 2)}h"},
-                {"type": "mrkdwn", "text": "*MTD 件数:*\n" + f"{mtd_tasks}"},
-            ],
-        },
-        {"type": "context", "elements": [{"type": "mrkdwn", "text": f"データ: `{config.BQ_TABLE_FQN}`  / TZ: {tz}"}]},
+        {"type": "context", "elements": [{"type": "mrkdwn", "text": f"データ: `{config.GCP_PROJECT_ID}.{config.BQ_DATASET_ID}.v_unique_tasks`  / TZ: {tz} / *完了日ベース*"}]},
     ]
     ql = _quick_links_elements()
     if ql:
@@ -401,108 +356,26 @@ def send_daily_digest(bq: bigquery.Client, target_date: Optional[str] = None, to
 
     thread_ts = _post_message(parent_blocks, text_fallback=f"{day_str} 日次ダイジェスト")
 
-    # スレッドにTopセクションを分割投稿
+    # トップテーブル
     if thread_ts:
+        projects_tbl = _as_mrkdwn_table(
+            [{"project": r.project_name, "hours": round((r.hours or 0.0), 2), "tasks": r.tasks} for r in projects],
+            ["project", "hours", "tasks"],
+            ["プロジェクト", "実績h", "件数"],
+        )
+        assignees_tbl = _as_mrkdwn_table(
+            [{"assignee": r.assignee_name, "hours": round((r.hours or 0.0), 2), "tasks": r.tasks} for r in assignees],
+            ["assignee", "hours", "tasks"],
+            ["担当者", "実績h", "件数"],
+        )
         _post_message([
-            {"type": "section", "text": {"type": "mrkdwn", "text": "*Top Projects（昨日）*"}},
+            {"type": "section", "text": {"type": "mrkdwn", "text": "*Top Projects（昨日・完了日ベース）*"}},
             {"type": "section", "text": {"type": "mrkdwn", "text": projects_tbl}},
         ], text_fallback="Top Projects", thread_ts=thread_ts)
         _post_message([
-            {"type": "section", "text": {"type": "mrkdwn", "text": "*Top Assignees（昨日）*"}},
+            {"type": "section", "text": {"type": "mrkdwn", "text": "*Top Assignees（昨日・完了日ベース）*"}},
             {"type": "section", "text": {"type": "mrkdwn", "text": assignees_tbl}},
         ], text_fallback="Top Assignees", thread_ts=thread_ts)
-
-    # 担当者ごとの異常候補（上位3）
-    anomalies_blocks: Optional[List[Dict[str, Any]]] = None
-    if hist_assignee_daily:
-        # 平均を計算
-        from collections import defaultdict
-        total_by_assignee: Dict[str, Dict[str, float]] = defaultdict(lambda: {"tasks_sum": 0.0, "hours_sum": 0.0, "days": 0.0})
-        for r in hist_assignee_daily:
-            key = r.assignee_name
-            total_by_assignee[key]["tasks_sum"] += float(r.tasks or 0.0)
-            total_by_assignee[key]["hours_sum"] += float(r.hours or 0.0)
-            total_by_assignee[key]["days"] += 1.0
-        avg_by_assignee: Dict[str, Dict[str, float]] = {}
-        for k, v in total_by_assignee.items():
-            d = max(1.0, v["days"])
-            avg_by_assignee[k] = {
-                "avg_tasks": v["tasks_sum"] / d,
-                "avg_hours": v["hours_sum"] / d,
-            }
-        # 昨日の実績
-        y_map: Dict[str, Dict[str, float]] = {r.assignee_name: {"tasks": float(r.tasks or 0.0), "hours": float(r.hours or 0.0)} for r in y_by_assignee}
-        # 全キー集合
-        all_names = set(avg_by_assignee.keys()) | set(y_map.keys())
-        candidates = []
-        for name in all_names:
-            avg = avg_by_assignee.get(name, {"avg_tasks": 0.0, "avg_hours": 0.0})
-            if avg["avg_tasks"] <= 0 and avg["avg_hours"] <= 0:
-                continue
-            yval = y_map.get(name, {"tasks": 0.0, "hours": 0.0})
-            hours_vs_pct = None if avg["avg_hours"] == 0 else round((yval["hours"] - avg["avg_hours"]) / avg["avg_hours"] * 100.0, 1)
-            tasks_vs_pct = None if avg["avg_tasks"] == 0 else round((yval["tasks"] - avg["avg_tasks"]) / avg["avg_tasks"] * 100.0, 1)
-            is_anom = False
-            if avg["avg_hours"] > 0 and yval["hours"] < 0.5 * avg["avg_hours"]:
-                is_anom = True
-            if avg["avg_tasks"] > 0 and yval["tasks"] < 0.5 * avg["avg_tasks"]:
-                is_anom = True
-            if avg["avg_tasks"] > 0 and yval["tasks"] == 0:
-                is_anom = True
-            if is_anom:
-                candidates.append({
-                    "assignee": name,
-                    "hours": round(yval["hours"], 2),
-                    "tasks": int(yval["tasks"]),
-                    "avg_hours": round(avg["avg_hours"], 2),
-                    "avg_tasks": round(avg["avg_tasks"], 2),
-                    "hours_vs": hours_vs_pct,
-                    "tasks_vs": tasks_vs_pct,
-                })
-        # 強い下振れ順に上位3
-        def severity_key(r: Dict[str, Any]) -> float:
-            hv = r.get("hours_vs")
-            tv = r.get("tasks_vs")
-            worst = min([v for v in [hv, tv] if v is not None] or [0.0])
-            return worst
-        candidates.sort(key=severity_key)
-        top3 = candidates[:3]
-        if top3:
-            anomalies_tbl = _as_mrkdwn_table(
-                [
-                    {
-                        "担当者": r["assignee"],
-                        "実績h": r["hours"],
-                        "直近Avg h": r["avg_hours"],
-                        "h比%": r["hours_vs"],
-                        "件数": r["tasks"],
-                        "直近Avg 件": r["avg_tasks"],
-                        "件比%": r["tasks_vs"],
-                    }
-                    for r in top3
-                ],
-                ["担当者", "実績h", "直近Avg h", "h比%", "件数", "直近Avg 件", "件比%"],
-                ["担当者", "実績h", "直近Avg h", "h比%", "件数", "直近Avg 件", "件比%"],
-            )
-            anomalies_blocks = [
-                {"type": "section", "text": {"type": "mrkdwn", "text": "*担当者ごとの異常候補（上位3）*"}},
-                {"type": "section", "text": {"type": "mrkdwn", "text": anomalies_tbl}},
-            ]
-    if thread_ts and anomalies_blocks:
-        _post_message(anomalies_blocks, text_fallback="担当者の異常候補", thread_ts=thread_ts)
-
-    # 強い下振れアラート（別チャンネル）。-60% 以下なら通知。
-    try:
-        if (hours_vs is not None and hours_vs <= -60.0) or (tasks_vs is not None and tasks_vs <= -60.0):
-            alert_text = f"⚠️ 下振れ検知 {day_str}: 件数 {tasks_vs if tasks_vs is not None else 'N/A'}% / 時間 {hours_vs if hours_vs is not None else 'N/A'}%"
-            _post_message_to(
-                SLACK_ALERT_CHANNEL_ID or SLACK_CHANNEL_ID,
-                blocks=[{"type": "section", "text": {"type": "mrkdwn", "text": alert_text}}],
-                text_fallback=alert_text,
-            )
-    except Exception as _:
-        # non-fatal
-        pass
 
 
 def send_open_tasks_summary(bq: bigquery.Client, snapshot_date: Optional[str] = None, top_n: int = 5) -> None:
