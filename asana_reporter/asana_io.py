@@ -96,7 +96,7 @@ def get_subtasks(tasks_api: asana.TasksApi, parent_task_id: str) -> List[Dict[st
         subtasks = tasks_api.get_subtasks_for_task(
             parent_task_id,
             opts={
-                'opt_fields': 'name,completed,completed_at,created_at,modified_at,due_on,assignee.name,custom_fields'
+                'opt_fields': 'name,completed,completed_at,created_at,modified_at,due_on,assignee.name,actual_time_minutes,custom_fields'
             }
         )
         return list(subtasks)
@@ -123,6 +123,7 @@ def get_completed_tasks_for_project(
         'opt_fields': [
             'name', 'gid', 'completed', 'completed_at', 'created_at', 'due_on', 'modified_at',
             'assignee', 'assignee.name', 'num_subtasks',
+            'actual_time_minutes',
             # カスタムフィールドの実値も明示取得
             'custom_fields', 'custom_fields.name', 'custom_fields.number_value', 'custom_fields.text_value', 'custom_fields.display_value'
         ],
@@ -189,7 +190,7 @@ def get_completed_tasks_for_project(
                     tasks_api.get_subtasks_for_task,
                     parent_task_id=task_dict['gid'],
                     opts={
-                        'opt_fields': 'name,completed,completed_at,created_at,modified_at,due_on,assignee.name,custom_fields'
+                        'opt_fields': 'name,completed,completed_at,created_at,modified_at,due_on,assignee.name,actual_time_minutes,custom_fields'
                     }
                 )
             subtasks = _get_subtasks_with_retry()
@@ -197,6 +198,10 @@ def get_completed_tasks_for_project(
                 is_completed = subtask_dict.get('completed') and subtask_dict.get('completed_at')
                 if is_completed or include_incomplete_subtasks:
                     subtask_time_fields = _parse_custom_fields(subtask_dict.get('custom_fields', []))
+                    atm = subtask_dict.get('actual_time_minutes')
+                    if isinstance(atm, (int, float)):
+                        subtask_time_fields['actual_time_raw'] = float(atm)
+                        subtask_time_fields['actual_time'] = float(atm) / 60.0
                     subtask_assignee = subtask_dict.get('assignee')
                     formatted_subtask = {
                         'task_id': subtask_dict['gid'],
@@ -224,6 +229,10 @@ def get_completed_tasks_for_project(
         # 次に、親タスクが完了済みなら親も取り込む
         if task_dict.get('completed') and task_dict.get('completed_at'):
             time_fields = _parse_custom_fields(task_dict.get('custom_fields', []))
+            atm = task_dict.get('actual_time_minutes')
+            if isinstance(atm, (int, float)):
+                time_fields['actual_time_raw'] = float(atm)
+                time_fields['actual_time'] = float(atm) / 60.0
             assignee = task_dict.get('assignee')
             formatted_task = {
                 'task_id': task_dict['gid'],
@@ -269,6 +278,7 @@ def get_open_tasks_for_project(
         'opt_fields': [
             'name', 'gid', 'completed', 'completed_at', 'created_at', 'due_on', 'modified_at',
             'assignee', 'assignee.name', 'assignee.gid', 'num_subtasks',
+            'actual_time_minutes',
             'custom_fields', 'custom_fields.name', 'custom_fields.number_value', 'custom_fields.text_value', 'custom_fields.display_value'
         ],
         'limit': 100,
@@ -332,7 +342,7 @@ def get_open_tasks_for_project(
                 subtasks = _with_retry(
                     tasks_api.get_subtasks_for_task,
                     parent_task_id=task_dict['gid'],
-                    opts={'opt_fields': 'name,completed,completed_at,created_at,modified_at,due_on,assignee.name,assignee.gid,custom_fields'}
+                    opts={'opt_fields': 'name,completed,completed_at,created_at,modified_at,due_on,assignee.name,assignee.gid,actual_time_minutes,custom_fields'}
                 )
             except asana.rest.ApiException:
                 subtasks = []

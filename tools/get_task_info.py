@@ -14,6 +14,7 @@ def main(task_gid: str):
     fields = [
         'gid', 'name', 'completed', 'completed_at', 'modified_at', 'created_at',
         'assignee.name', 'projects.name', 'parent',
+        'actual_time_minutes',
         'custom_fields', 'custom_fields.name', 'custom_fields.number_value', 'custom_fields.text_value', 'custom_fields.display_value'
     ]
     task = tasks_api.get_task(task_gid, opts={'opt_fields': ','.join(fields)})
@@ -26,6 +27,7 @@ def main(task_gid: str):
     assignee = task.get('assignee')
     print(f"assignee: {assignee.get('name') if assignee else None}")
     print(f"projects: {[p.get('name') for p in (task.get('projects') or [])]}")
+    print(f"actual_time_minutes(native): {task.get('actual_time_minutes')}")
 
     # parse custom fields rough
     est = None

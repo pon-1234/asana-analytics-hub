@@ -100,8 +100,8 @@ def ensure_table_exists(client: bigquery.Client):
         for col, typ in (
             ("project_gid", "STRING"),
             ("assignee_gid", "STRING"),
-            ("estimated_minutes", "FLOAT"),
-            ("actual_minutes", "FLOAT"),
+            ("estimated_minutes", "FLOAT64"),
+            ("actual_minutes", "FLOAT64"),
         ):
             if col not in existing_columns:
                 client.query(f"ALTER TABLE `{config.BQ_TABLE_FQN}` ADD COLUMN IF NOT EXISTS {col} {typ}").result()
