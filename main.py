@@ -70,8 +70,20 @@ def fetch_asana_tasks_to_bq(request: Request):
             full_sync = bool(request_json.get('full_sync', False))
             backfill_subtasks = bool(request_json.get('backfill_subtasks', False))
             include_incomplete_subtasks = bool(request_json.get('include_incomplete_subtasks', False))
+            completed_since_override_arg = request_json.get('completed_since_override')
+            # Optional helper: date_jst (YYYY-MM-DD) → completed_since_override at start of that JST day
+            if not completed_since_override_arg and request_json.get('date_jst'):
+                try:
+                    from datetime import datetime as _dt
+                    from zoneinfo import ZoneInfo as _Zi
+                    jst = _Zi('Asia/Tokyo')
+                    start_jst = _dt.strptime(request_json['date_jst'], '%Y-%m-%d').replace(tzinfo=jst)
+                    completed_since_override_arg = start_jst.astimezone(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%fZ')
+                except Exception:
+                    completed_since_override_arg = None
         else:
             include_incomplete_subtasks = False
+            completed_since_override_arg = None
         print(f"Request options: project_filter={project_filter}, full_sync={full_sync}, backfill_subtasks={backfill_subtasks}, include_incomplete_subtasks={include_incomplete_subtasks}")
 
         # BigQueryから最終更新日時を取得し、差分取得の起点にする（full_syncならNone）
@@ -92,7 +104,7 @@ def fetch_asana_tasks_to_bq(request: Request):
                     project,
                     modified_since=modified_since,
                     force_parent_sweep=backfill_subtasks,
-                    completed_since_override='1970-01-01T00:00:00.000Z' if backfill_subtasks or full_sync else None,
+                    completed_since_override=(completed_since_override_arg or ('1970-01-01T00:00:00.000Z' if backfill_subtasks or full_sync else None)),
                     include_incomplete_subtasks=include_incomplete_subtasks,
                 )
                 all_tasks.extend(tasks)

@@ -3,6 +3,7 @@ from google.oauth2 import service_account
 from google.api_core.exceptions import NotFound
 from typing import List, Dict, Any, Iterator
 from datetime import datetime, timezone
+import time
 
 from . import config
 
@@ -299,11 +300,10 @@ def upsert_tasks_via_merge(client: bigquery.Client, tasks: List[Dict[str, Any]])
 
     dataset_ref = client.dataset(config.BQ_DATASET_ID)
     target_ref = dataset_ref.table(config.BQ_TABLE_ID)
-    staging_table_id = "completed_tasks_staging"
+    staging_table_id = f"completed_tasks_staging_{int(time.time())}"
     staging_ref = dataset_ref.table(staging_table_id)
 
-    # 1) 一時テーブル作成（ターゲットのスキーマを流用）
-    client.delete_table(staging_ref, not_found_ok=True)
+    # 1) 一時テーブル作成（ターゲットのスキーマを流用）: 固有名で作成し、前段の削除APIを回避
     target_table = client.get_table(target_ref)
     staging_table = bigquery.Table(staging_ref, schema=target_table.schema)
     client.create_table(staging_table)

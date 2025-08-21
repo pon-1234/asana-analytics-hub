@@ -318,8 +318,8 @@ def send_daily_digest(bq: bigquery.Client, target_date: Optional[str] = None, to
             {
                 "type": "section",
                 "fields": [
-                    {"type": "mrkdwn", "text": f"*MTD 実績:*\\n{round(mtd_hours, 2)}h"},
-                    {"type": "mrkdwn", "text": f"*MTD 件数:*\\n{mtd_tasks}"},
+                    {"type": "mrkdwn", "text": f"*MTD 実績:*\n{round(mtd_hours, 2)}h"},
+                    {"type": "mrkdwn", "text": f"*MTD 件数:*\n{mtd_tasks}"},
                 ],
             },
             {"type": "context", "elements": [{"type": "mrkdwn", "text": f"データ: `{config.GCP_PROJECT_ID}.{config.BQ_DATASET_ID}.v_unique_tasks`  / TZ: {tz} / *完了日ベース*"}]},
@@ -341,10 +341,10 @@ def send_daily_digest(bq: bigquery.Client, target_date: Optional[str] = None, to
         {
             "type": "section",
             "fields": [
-                {"type": "mrkdwn", "text": f"*昨日の実績時間:*\\n{round(total_hours, 2)}h"},
-                {"type": "mrkdwn", "text": f"*昨日の完了タスク数:*\\n{tasks_count}"},
-                {"type": "mrkdwn", "text": f"*MTD 実績:*\\n{round(mtd_hours, 2)}h"},
-                {"type": "mrkdwn", "text": f"*MTD 件数:*\\n{mtd_tasks}"},
+                {"type": "mrkdwn", "text": f"*昨日の実績時間:*\n{round(total_hours, 2)}h"},
+                {"type": "mrkdwn", "text": f"*昨日の完了タスク数:*\n{tasks_count}"},
+                {"type": "mrkdwn", "text": f"*MTD 実績:*\n{round(mtd_hours, 2)}h"},
+                {"type": "mrkdwn", "text": f"*MTD 件数:*\n{mtd_tasks}"},
             ],
         },
         {"type": "context", "elements": [{"type": "mrkdwn", "text": baseline}]},
