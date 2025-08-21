@@ -121,24 +121,18 @@ def get_completed_tasks_for_project(
 
     # APIに渡すオプションを設定
     opts = {
-        'opt_fields': [
-            'name', 'gid', 'completed', 'completed_at', 'created_at', 'due_on', 'modified_at',
-            'assignee', 'assignee.name', 'num_subtasks',
-            'actual_time_minutes',
-            # カスタムフィールドの実値も明示取得
-            'custom_fields', 'custom_fields.name', 'custom_fields.number_value', 'custom_fields.text_value', 'custom_fields.display_value'
-        ],
+        'opt_fields': 'name,gid,completed,completed_at,created_at,due_on,modified_at,assignee,assignee.name,assignee.gid,num_subtasks,actual_time_minutes,custom_fields,custom_fields.name,custom_fields.number_value,custom_fields.text_value,custom_fields.display_value',
         'limit': 100,
     }
 
     if force_parent_sweep:
-        # 親が未完了でも一覧に出るように、完了基準ではなく更新基準で全親を掃引
-        opts['modified_since'] = completed_since_override or '1970-01-01T00:00:00.000Z'
-        print(f"  Backfill: sweeping parents with modified_since={opts.get('modified_since')}")
+        # 親が未完了でも一覧に出るように、完了日基準で全件を掃引（未完了も返る仕様）
+        opts['completed_since'] = completed_since_override or '1970-01-01T00:00:00.000Z'
+        print(f"  Backfill: sweeping with completed_since={opts.get('completed_since')}")
     elif modified_since:
-        # 差分取得
-        opts['modified_since'] = modified_since
-        print(f"  Fetching tasks modified since {modified_since}")
+        # 差分取得は完了日ベース（未完了も返る仕様のため親列挙に十分）
+        opts['completed_since'] = modified_since
+        print(f"  Fetching tasks completed since {modified_since}")
     else:
         # フル取得（通常）
         opts['completed_since'] = completed_since_override or '2023-01-01T00:00:00.000Z'
@@ -189,7 +183,7 @@ def get_completed_tasks_for_project(
             def _get_subtasks_with_retry():
                 return _with_retry(
                     tasks_api.get_subtasks_for_task,
-                    parent_task_id=task_dict['gid'],
+                    task_gid=task_dict['gid'],
                     opts={
                         'opt_fields': 'name,completed,completed_at,created_at,modified_at,due_on,assignee.name,actual_time_minutes,custom_fields'
                     }
@@ -276,12 +270,7 @@ def get_open_tasks_for_project(
 
     opts = {
         'completed_since': 'now',
-        'opt_fields': [
-            'name', 'gid', 'completed', 'completed_at', 'created_at', 'due_on', 'modified_at',
-            'assignee', 'assignee.name', 'assignee.gid', 'num_subtasks',
-            'actual_time_minutes',
-            'custom_fields', 'custom_fields.name', 'custom_fields.number_value', 'custom_fields.text_value', 'custom_fields.display_value'
-        ],
+        'opt_fields': 'name,gid,completed,completed_at,created_at,due_on,modified_at,assignee,assignee.name,assignee.gid,num_subtasks,actual_time_minutes,custom_fields,custom_fields.name,custom_fields.number_value,custom_fields.text_value,custom_fields.display_value',
         'limit': 100,
     }
 
@@ -342,7 +331,7 @@ def get_open_tasks_for_project(
             try:
                 subtasks = _with_retry(
                     tasks_api.get_subtasks_for_task,
-                    parent_task_id=task_dict['gid'],
+                    task_gid=task_dict['gid'],
                     opts={'opt_fields': 'name,completed,completed_at,created_at,modified_at,due_on,assignee.name,assignee.gid,actual_time_minutes,custom_fields'}
                 )
             except asana.rest.ApiException:

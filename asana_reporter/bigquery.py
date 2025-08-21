@@ -323,7 +323,13 @@ def upsert_tasks_via_merge(client: bigquery.Client, tasks: List[Dict[str, Any]])
     # 3) MERGE 実行
     merge_sql = f"""
     MERGE `{config.BQ_TABLE_FQN}` T
-    USING `{config.GCP_PROJECT_ID}.{config.BQ_DATASET_ID}.{staging_table_id}` S
+    USING (
+      SELECT * FROM `{config.GCP_PROJECT_ID}.{config.BQ_DATASET_ID}.{staging_table_id}`
+      QUALIFY ROW_NUMBER() OVER (
+        PARTITION BY task_id
+        ORDER BY COALESCE(modified_at, inserted_at) DESC, inserted_at DESC
+      ) = 1
+    ) S
     ON T.task_id = S.task_id
     WHEN MATCHED THEN UPDATE SET
       task_name       = S.task_name,
