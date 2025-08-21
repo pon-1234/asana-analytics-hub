@@ -273,6 +273,36 @@ def snapshot_open_tasks(request: Request):
         return {"status": "error", "message": str(e)}, 500
 
 
+@functions_framework.http
+def send_daily_digest_manual(request: Request):
+    """
+    日次ダイジェストを手動で送信するCloud Function。
+    """
+    print("--- Starting Manual Daily Digest ---")
+    try:
+        config.validate_config()
+        
+        bq_client = bigquery.get_bigquery_client()
+        bigquery.ensure_views(bq_client)
+        
+        # リクエストパラメータ（任意）
+        request_json = request.get_json(silent=True) if request is not None else None
+        target_date = None
+        if request_json:
+            target_date = request_json.get('date')  # YYYY-MM-DD形式
+        
+        send_daily_digest(bq_client, target_date=target_date)
+        
+        print("--- Manual Daily Digest finished successfully ---")
+        return {"status": "success", "target_date": target_date}, 200
+
+    except Exception as e:
+        import traceback
+        print(f"FATAL Error in send_daily_digest_manual: {e}")
+        traceback.print_exc()
+        return {"status": "error", "message": str(e)}, 500
+
+
 if __name__ == '__main__':
     """
     コマンドラインからローカルで実行するためのエントリポイント。
