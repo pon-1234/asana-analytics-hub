@@ -311,7 +311,12 @@ def get_open_tasks_for_project(
         # 親・未完了
         if not task_dict.get('completed'):
             assignee = task_dict.get('assignee')
-            has_time_fields = bool(_parse_custom_fields(task_dict.get('custom_fields', [])).get('estimated_time') or _parse_custom_fields(task_dict.get('custom_fields', [])).get('actual_time_raw'))
+            # 予定/実績（分）を抽出
+            _tf = _parse_custom_fields(task_dict.get('custom_fields', []) or [])
+            _atm = task_dict.get('actual_time_minutes')
+            estimated_minutes = _tf.get('estimated_time')
+            actual_minutes = float(_atm) if isinstance(_atm, (int, float)) else _tf.get('actual_time_raw')
+            has_time_fields = bool(estimated_minutes or actual_minutes)
             open_rows.append({
                 'task_id': task_dict['gid'],
                 'task_name': task_dict.get('name'),
@@ -324,6 +329,8 @@ def get_open_tasks_for_project(
                 'modified_at': task_dict.get('modified_at'),
                 'is_overdue': False,  # 後段で判定
                 'has_time_fields': has_time_fields,
+                'estimated_minutes': estimated_minutes,
+                'actual_minutes': actual_minutes,
             })
 
         # サブタスク（未完）も取得
@@ -332,7 +339,7 @@ def get_open_tasks_for_project(
                 subtasks = _with_retry(
                     tasks_api.get_subtasks_for_task,
                     task_gid=task_dict['gid'],
-                    opts={'opt_fields': 'name,completed,completed_at,created_at,modified_at,due_on,assignee.name,assignee.gid,actual_time_minutes,custom_fields'}
+                    opts={'opt_fields': 'name,completed,completed_at,created_at,modified_at,due_on,assignee.name,assignee.gid,actual_time_minutes,custom_fields,custom_fields.name,custom_fields.number_value,custom_fields.text_value,custom_fields.display_value'}
                 )
             except asana.rest.ApiException:
                 subtasks = []
@@ -340,7 +347,11 @@ def get_open_tasks_for_project(
                 if subtask.get('completed'):
                     continue
                 sub_assignee = subtask.get('assignee')
-                has_time_fields = bool(_parse_custom_fields(subtask.get('custom_fields', [])).get('estimated_time') or _parse_custom_fields(subtask.get('custom_fields', [])).get('actual_time_raw'))
+                _tf = _parse_custom_fields(subtask.get('custom_fields', []) or [])
+                _atm = subtask.get('actual_time_minutes')
+                estimated_minutes = _tf.get('estimated_time')
+                actual_minutes = float(_atm) if isinstance(_atm, (int, float)) else _tf.get('actual_time_raw')
+                has_time_fields = bool(estimated_minutes or actual_minutes)
                 open_rows.append({
                     'task_id': subtask['gid'],
                     'task_name': f"[Subtask] {subtask.get('name')}",
@@ -353,6 +364,8 @@ def get_open_tasks_for_project(
                     'modified_at': subtask.get('modified_at'),
                     'is_overdue': False,
                     'has_time_fields': has_time_fields,
+                    'estimated_minutes': estimated_minutes,
+                    'actual_minutes': actual_minutes,
                 })
 
     return open_rows
@@ -417,4 +430,3 @@ def format_entries_for_bq(raw_entries: List[Dict[str, Any]]) -> List[Dict[str, A
             "modified_at": e.get("modified_at"),
         })
     return rows
-

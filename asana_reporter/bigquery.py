@@ -189,8 +189,19 @@ def ensure_open_tasks_snapshot_table(client: bigquery.Client):
     dataset_ref = client.dataset(config.BQ_DATASET_ID)
     table_ref = dataset_ref.table("open_tasks_snapshot")
     try:
-        client.get_table(table_ref)
+        existing = client.get_table(table_ref)
         print("Table open_tasks_snapshot already exists.")
+        # 追加列がなければ後方互換で付与
+        existing_cols = {f.name for f in existing.schema}
+        alters = []
+        if "estimated_minutes" not in existing_cols:
+            alters.append("ADD COLUMN IF NOT EXISTS estimated_minutes FLOAT64")
+        if "actual_minutes" not in existing_cols:
+            alters.append("ADD COLUMN IF NOT EXISTS actual_minutes FLOAT64")
+        if alters:
+            alter_sql = f"ALTER TABLE `{config.GCP_PROJECT_ID}.{config.BQ_DATASET_ID}.open_tasks_snapshot` " + ", ".join(alters)
+            client.query(alter_sql).result()
+            print("Added columns to open_tasks_snapshot:", ", ".join([a.split()[5] for a in alters]))
         return
     except NotFound:
         pass
@@ -209,6 +220,8 @@ def ensure_open_tasks_snapshot_table(client: bigquery.Client):
         bigquery.SchemaField("modified_at", "TIMESTAMP"),
         bigquery.SchemaField("is_overdue", "BOOLEAN"),
         bigquery.SchemaField("has_time_fields", "BOOLEAN"),
+        bigquery.SchemaField("estimated_minutes", "FLOAT"),
+        bigquery.SchemaField("actual_minutes", "FLOAT"),
     ]
 
     table = bigquery.Table(table_ref, schema=schema)

@@ -55,12 +55,30 @@ gcloud functions deploy snapshot-open-tasks \
   --min-instances=0 \
   --gen2
 
+# Deploy manual weekly digest function (optional manual trigger)
+echo "4. Deploying send-weekly-digest-manual function..."
+gcloud functions deploy send-weekly-digest-manual \
+  --project=asana-analytics-hub \
+  --region=asia-northeast1 \
+  --runtime=python311 \
+  --source=. \
+  --entry-point=send_weekly_digest_manual \
+  --trigger-http \
+  --no-allow-unauthenticated \
+  --service-account=bigquery-to-sheets@asana-analytics-hub.iam.gserviceaccount.com \
+  --env-vars-file=env.yaml \
+  --set-secrets=ASANA_ACCESS_TOKEN=asana-access-token:latest,SLACK_BOT_TOKEN=slack-bot-token:latest \
+  --timeout=540s \
+  --min-instances=0 \
+  --gen2
+
 echo "=== Getting Function URLs ==="
 
 # Get the URLs of the deployed functions
 FETCH_URL=$(gcloud functions describe fetch-asana-tasks --region=asia-northeast1 --project=asana-analytics-hub --gen2 --format="value(serviceConfig.uri)")
 EXPORT_URL=$(gcloud functions describe export-to-sheets --region=asia-northeast1 --project=asana-analytics-hub --gen2 --format="value(serviceConfig.uri)")
 SNAPSHOT_URL=$(gcloud functions describe snapshot-open-tasks --region=asia-northeast1 --project=asana-analytics-hub --gen2 --format="value(serviceConfig.uri)")
+WEEKLY_MANUAL_URL=$(gcloud functions describe send-weekly-digest-manual --region=asia-northeast1 --project=asana-analytics-hub --gen2 --format="value(serviceConfig.uri)")
 
 echo "Fetch function URL: $FETCH_URL"
 echo "Export function URL: $EXPORT_URL"
@@ -68,34 +86,38 @@ echo "Export function URL: $EXPORT_URL"
 echo "=== Updating Cloud Scheduler Jobs (with OIDC) ==="
 
 # Update Cloud Scheduler job for fetch-asana-tasks
-echo "4. Updating Cloud Scheduler job for fetch-asana-tasks..."
+echo "4. Updating Cloud Scheduler job for fetch-asana-tasks (weekly Mon 06:30 JST)..."
 gcloud scheduler jobs update http fetch-asana-tasks-daily \
   --location=asia-northeast1 \
   --uri="$FETCH_URL" \
   --http-method=POST \
+  --schedule="30 6 * * 1" \
+  --time-zone="Asia/Tokyo" \
   --oidc-service-account-email="bigquery-to-sheets@asana-analytics-hub.iam.gserviceaccount.com" \
   --oidc-token-audience="$FETCH_URL" \
   --project=asana-analytics-hub
 
 # Update Cloud Scheduler job for export-to-sheets
-echo "5. Updating Cloud Scheduler job for export-to-sheets..."
+echo "5. Updating Cloud Scheduler job for export-to-sheets (weekly Mon 07:15 JST)..."
 gcloud scheduler jobs update http export-to-sheets-daily \
   --location=asia-northeast1 \
   --uri="$EXPORT_URL" \
   --http-method=POST \
+  --schedule="15 7 * * 1" \
+  --time-zone="Asia/Tokyo" \
   --oidc-service-account-email="bigquery-to-sheets@asana-analytics-hub.iam.gserviceaccount.com" \
   --oidc-token-audience="$EXPORT_URL" \
   --project=asana-analytics-hub
 
-# Create or update snapshot daily job (07:00 JST)
-echo "6. Creating/Updating Cloud Scheduler job for snapshot-open-tasks..."
+# Create or update snapshot weekly job (Mon 07:00 JST)
+echo "6. Creating/Updating Cloud Scheduler job for snapshot-open-tasks (weekly)..."
 gcloud scheduler jobs describe snapshot-open-tasks-daily --location=asia-northeast1 --project=asana-analytics-hub >/dev/null 2>&1
 if [ $? -eq 0 ]; then
   gcloud scheduler jobs update http snapshot-open-tasks-daily \
     --location=asia-northeast1 \
     --uri="$SNAPSHOT_URL" \
     --http-method=POST \
-    --schedule="0 7 * * *" \
+    --schedule="0 7 * * 1" \
     --time-zone="Asia/Tokyo" \
     --oidc-service-account-email="bigquery-to-sheets@asana-analytics-hub.iam.gserviceaccount.com" \
     --oidc-token-audience="$SNAPSHOT_URL" \
@@ -105,11 +127,38 @@ else
     --location=asia-northeast1 \
     --uri="$SNAPSHOT_URL" \
     --http-method=POST \
-    --schedule="0 7 * * *" \
+    --schedule="0 7 * * 1" \
     --time-zone="Asia/Tokyo" \
     --oidc-service-account-email="bigquery-to-sheets@asana-analytics-hub.iam.gserviceaccount.com" \
     --oidc-token-audience="$SNAPSHOT_URL" \
     --project=asana-analytics-hub
+fi
+
+# Optionally create/update weekly digest manual scheduler on Mondays at 07:10 JST
+if [ "${SCHEDULE_WEEKLY_DIGEST:-false}" = "true" ]; then
+  echo "7. Creating/Updating Cloud Scheduler job for send-weekly-digest-manual (Mondays 07:10 JST)..."
+  gcloud scheduler jobs describe send-weekly-digest-manual-monday --location=asia-northeast1 --project=asana-analytics-hub >/dev/null 2>&1
+  if [ $? -eq 0 ]; then
+    gcloud scheduler jobs update http send-weekly-digest-manual-monday \
+      --location=asia-northeast1 \
+      --uri="$WEEKLY_MANUAL_URL" \
+      --http-method=POST \
+      --schedule="10 7 * * 1" \
+      --time-zone="Asia/Tokyo" \
+      --oidc-service-account-email="bigquery-to-sheets@asana-analytics-hub.iam.gserviceaccount.com" \
+      --oidc-token-audience="$WEEKLY_MANUAL_URL" \
+      --project=asana-analytics-hub
+  else
+    gcloud scheduler jobs create http send-weekly-digest-manual-monday \
+      --location=asia-northeast1 \
+      --uri="$WEEKLY_MANUAL_URL" \
+      --http-method=POST \
+      --schedule="10 7 * * 1" \
+      --time-zone="Asia/Tokyo" \
+      --oidc-service-account-email="bigquery-to-sheets@asana-analytics-hub.iam.gserviceaccount.com" \
+      --oidc-token-audience="$WEEKLY_MANUAL_URL" \
+      --project=asana-analytics-hub
+  fi
 fi
 
 echo "=== Resuming Cloud Scheduler Jobs ==="
@@ -130,8 +179,15 @@ gcloud scheduler jobs resume snapshot-open-tasks-daily \
   --location=asia-northeast1 \
   --project=asana-analytics-hub
 
+if [ "${SCHEDULE_WEEKLY_DIGEST:-false}" = "true" ]; then
+  echo "10. Resuming send-weekly-digest-manual-monday job..."
+  gcloud scheduler jobs resume send-weekly-digest-manual-monday \
+    --location=asia-northeast1 \
+    --project=asana-analytics-hub || true
+fi
+
 echo "=== Granting Cloud Run Invoker to Scheduler SA ==="
-for SERVICE_NAME in fetch-asana-tasks export-to-sheets snapshot-open-tasks; do
+for SERVICE_NAME in fetch-asana-tasks export-to-sheets snapshot-open-tasks send-weekly-digest-manual; do
   gcloud run services add-iam-policy-binding "$SERVICE_NAME" \
     --region=asia-northeast1 \
     --project=asana-analytics-hub \

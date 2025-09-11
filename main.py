@@ -12,7 +12,7 @@ import asana as asana_sdk # PyPIのasana（例外型参照など）
 from asana_reporter.slack_notifier import (
     send_run_summary,
     send_monthly_digest,
-    send_daily_digest,
+    send_weekly_planning_and_overdue,
 )
 
 def _get_last_modified_from_bq(client: bigquery.bigquery.Client) -> str | None:
@@ -257,12 +257,11 @@ def snapshot_open_tasks(request: Request):
         else:
             print("No open tasks to snapshot.")
 
-        # Optional: notify summary to Slack channel (prototype)
+        # Weekly-only: post weekly digest (no daily summary)
         try:
-            from asana_reporter.slack_notifier import send_open_tasks_summary
-            send_open_tasks_summary(bq_client, jst_today)
+            send_weekly_planning_and_overdue(bq_client, jst_today)
         except Exception as e:
-            print(f"Slack summary skipped: {e}")
+            print(f"Weekly digest skipped: {e}")
 
         print("--- Open Tasks Snapshot finished ---")
         return {"status": "success", "open_tasks": len(all_rows)}, 200
@@ -302,6 +301,33 @@ def send_daily_digest_manual(request: Request):
         traceback.print_exc()
         return {"status": "error", "message": str(e)}, 500
 
+
+@functions_framework.http
+def send_weekly_digest_manual(request: Request):
+    """
+    週次ダイジェスト（今週の予定／前週までの期日超過）を手動送信。
+    body: {"date": "YYYY-MM-DD"} を渡すとその日の属する週を対象にします（未指定はJSTの今日）。
+    """
+    print("--- Starting Manual Weekly Digest ---")
+    try:
+        config.validate_config()
+        bq_client = bigquery.get_bigquery_client()
+        # Ensure open_tasks_snapshot has required columns (idempotent)
+        bigquery.ensure_open_tasks_snapshot_table(bq_client)
+        
+        # リクエストパラメータ（任意）
+        request_json = request.get_json(silent=True) if request is not None else None
+        target_date = None
+        if request_json:
+            target_date = request_json.get('date')  # YYYY-MM-DD
+        send_weekly_planning_and_overdue(bq_client, snapshot_date=target_date)
+        print("--- Manual Weekly Digest finished successfully ---")
+        return {"status": "success", "target_date": target_date}, 200
+    except Exception as e:
+        import traceback
+        print(f"FATAL Error in send_weekly_digest_manual: {e}")
+        traceback.print_exc()
+        return {"status": "error", "message": str(e)}, 500
 
 if __name__ == '__main__':
     """

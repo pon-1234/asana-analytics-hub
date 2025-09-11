@@ -71,6 +71,10 @@ def _hm(hours: Optional[float]) -> str:
     return f"{round(float(hours or 0.0), 2)}h"
 
 
+def _hm_from_minutes(minutes: Optional[float]) -> str:
+    return _hm((float(minutes or 0.0)) / 60.0)
+
+
 def _quick_links_elements() -> List[Dict[str, Any]]:
     """Return a single-element context with quick links to Sheets and BigQuery."""
     links: List[str] = []
@@ -448,6 +452,182 @@ def send_open_tasks_summary(bq: bigquery.Client, snapshot_date: Optional[str] = 
         blocks.append({"type": "context", "elements": ql})
     _post_message(blocks, text_fallback="未完了タスク スナップショット")
 
+
+def send_weekly_planning_and_overdue(bq: bigquery.Client, snapshot_date: Optional[str] = None, top_n: int = 10) -> None:
+    """
+    週次（JST、月曜起算）で以下を Slack 投稿します（open_tasks_snapshot ベース／未完了のみ）。
+      - 担当者別：今週の予定タスク数、今週の残工数（= 予定-実績、分→h）、前週までの期日超過件数、前週までの残工数
+      - プロジェクト別：期日超過（件数／残工数）
+    """
+    if not _slack_client or not SLACK_CHANNEL_ID:
+        return
+    tz = "Asia/Tokyo"
+    date_expr = f"DATE '{snapshot_date}'" if snapshot_date else f"CURRENT_DATE('{tz}')"
+
+    base = f"""
+    WITH s AS (
+      SELECT * FROM `{config.GCP_PROJECT_ID}.{config.BQ_DATASET_ID}.open_tasks_snapshot`
+      WHERE snapshot_date = {date_expr}
+    ),
+    p AS (
+      SELECT
+        DATE_TRUNC({date_expr}, WEEK(MONDAY)) AS ws,
+        DATE_ADD(DATE_TRUNC({date_expr}, WEEK(MONDAY)), INTERVAL 6 DAY) AS we
+    )
+    """
+
+    # 週境界（文字列で取得）
+    ws_we_sql = base + """
+    SELECT CAST(p.ws AS STRING) AS ws, CAST(p.we AS STRING) AS we
+    FROM p
+    """
+    ws_we_row = next(iter(bq.query(ws_we_sql).result()), None)
+    ws_str = getattr(ws_we_row, "ws", "")
+    we_str = getattr(ws_we_row, "we", "")
+
+    # フィルタ: 対象の担当者のみ（社員+指定業務パートナー）
+    allowed_exact = [
+        'HIROKAZU KAI',
+        'ayatanomurota',
+        '大橋涼菜',
+        '安藤彩香',
+        'ayane arikiyo',
+        '有清 彩音',
+        '尾崎友紀',
+        '五味 楓香',
+        '五味楓香',
+    ]
+    allow_in = ", ".join([f"'{n}'" for n in allowed_exact])
+    allowed_array = f"[" + allow_in + "]"
+    base_allowed = base + """
+    , allow AS (
+      SELECT name FROM UNNEST(""" + allowed_array + """) AS name
+    )
+    """
+
+    # 担当者別：今週予定 / 前週までの超過（未割当も含めるが、フィルタで対象者のみに絞る）
+    assignee_sql = base_allowed + """
+    SELECT
+      COALESCE(NULLIF(TRIM(s.assignee_name), ''), '(未割当)') AS assignee_name,
+      COUNTIF(s.due_on BETWEEN p.ws AND p.we) AS this_week_tasks,
+      SUM(IF(s.due_on BETWEEN p.ws AND p.we,
+             GREATEST(IFNULL(s.estimated_minutes,0) - IFNULL(s.actual_minutes,0), 0), 0)) AS this_week_remaining_minutes,
+      COUNTIF(s.due_on < p.ws) AS prev_overdue_tasks,
+      SUM(IF(s.due_on < p.ws,
+             GREATEST(IFNULL(s.estimated_minutes,0) - IFNULL(s.actual_minutes,0), 0), 0)) AS prev_overdue_remaining_minutes
+    FROM s, p, allow
+    WHERE TRIM(s.assignee_name) = allow.name
+    GROUP BY assignee_name
+    ORDER BY prev_overdue_remaining_minutes DESC, this_week_remaining_minutes DESC
+    """
+    print("[weekly] assignee_sql=\n" + assignee_sql)
+    assignee_rows = list(bq.query(assignee_sql).result())
+    assignee_table = _as_mrkdwn_table(
+        [{
+            "assignee": r.assignee_name,
+            "tw_tasks": r.this_week_tasks,
+            "tw_rem": _hm_from_minutes(r.this_week_remaining_minutes),
+            "prev_over": r.prev_overdue_tasks,
+            "prev_rem": _hm_from_minutes(r.prev_overdue_remaining_minutes),
+        } for r in assignee_rows],
+        ["assignee", "tw_tasks", "tw_rem", "prev_over", "prev_rem"],
+        ["担当者", "今週予定(件)", "今週残h", "前週まで超過(件)", "前週まで残h"],
+    )
+
+    # プロジェクト別：期日超過（0件の行は表示しない）
+    proj_over_sql = base + f"""
+    SELECT
+      s.project_name,
+      COUNTIF(s.is_overdue) AS overdue_tasks,
+      SUM(IF(s.is_overdue, GREATEST(IFNULL(s.estimated_minutes,0) - IFNULL(s.actual_minutes,0), 0), 0)) AS overdue_remaining_minutes
+    FROM s
+    GROUP BY s.project_name
+    HAVING overdue_tasks > 0
+    ORDER BY overdue_remaining_minutes DESC
+    LIMIT {top_n}
+    """
+    print("[weekly] proj_over_sql=\n" + proj_over_sql)
+    proj_rows = list(bq.query(proj_over_sql).result())
+    proj_table = _as_mrkdwn_table(
+        [{
+            "project": r.project_name,
+            "over": r.overdue_tasks,
+            "rem": _hm_from_minutes(r.overdue_remaining_minutes),
+        } for r in proj_rows],
+        ["project", "over", "rem"],
+        ["プロジェクト", "超過件数", "残h"],
+    )
+
+    # 担当者別：期日超過（0件の行は表示しない／未割当含む）
+    ass_over_sql = base_allowed + f"""
+    SELECT
+      COALESCE(NULLIF(TRIM(s.assignee_name), ''), '(未割当)') AS assignee_name,
+      COUNTIF(s.is_overdue) AS overdue_tasks,
+      SUM(IF(s.is_overdue, GREATEST(IFNULL(s.estimated_minutes,0) - IFNULL(s.actual_minutes,0), 0), 0)) AS overdue_remaining_minutes
+    FROM s, allow
+    WHERE TRIM(s.assignee_name) = allow.name
+    GROUP BY assignee_name
+    HAVING overdue_tasks > 0
+    ORDER BY overdue_remaining_minutes DESC
+    LIMIT {top_n}
+    """
+    print("[weekly] ass_over_sql=\n" + ass_over_sql)
+    ass_over_rows = list(bq.query(ass_over_sql).result())
+    ass_over_table = _as_mrkdwn_table(
+        [{
+            "assignee": r.assignee_name,
+            "over": r.overdue_tasks,
+            "rem": _hm_from_minutes(r.overdue_remaining_minutes),
+        } for r in ass_over_rows],
+        ["assignee", "over", "rem"],
+        ["担当者", "超過件数", "残h"],
+    )
+
+    # 期限未設定（参考）: 担当者別の未設定オープンタスク数と残工数
+    due_null_sql = base_allowed + f"""
+    SELECT
+      COALESCE(NULLIF(TRIM(s.assignee_name), ''), '(未割当)') AS assignee_name,
+      COUNTIF(s.due_on IS NULL) AS due_unset_tasks,
+      SUM(IF(s.due_on IS NULL, GREATEST(IFNULL(s.estimated_minutes,0) - IFNULL(s.actual_minutes,0), 0), 0)) AS due_unset_remaining_minutes
+    FROM s, allow
+    WHERE TRIM(s.assignee_name) = allow.name
+    GROUP BY assignee_name
+    HAVING due_unset_tasks > 0
+    ORDER BY due_unset_remaining_minutes DESC
+    LIMIT {top_n}
+    """
+    print("[weekly] due_null_sql=\n" + due_null_sql)
+    due_null_rows = list(bq.query(due_null_sql).result())
+    due_null_table = _as_mrkdwn_table(
+        [{
+            "assignee": r.assignee_name,
+            "tasks": r.due_unset_tasks,
+            "rem": _hm_from_minutes(r.due_unset_remaining_minutes),
+        } for r in due_null_rows],
+        ["assignee", "tasks", "rem"],
+        ["担当者", "期限未設定(件)", "残h"],
+    )
+
+    title = f"*🗓️ 週次プラン & 期日超過 — {ws_str}〜{we_str}（JST）*"
+    blocks: List[Dict[str, Any]] = [
+        {"type": "section", "text": {"type": "mrkdwn", "text": title}},
+        {"type": "divider"},
+        {"type": "section", "text": {"type": "mrkdwn", "text": "*担当者別：今週の予定 vs 前週までの期日超過*"}},
+        {"type": "section", "text": {"type": "mrkdwn", "text": assignee_table}},
+        {"type": "divider"},
+        {"type": "section", "text": {"type": "mrkdwn", "text": "*プロジェクト別：期日超過（Top）*"}},
+        {"type": "section", "text": {"type": "mrkdwn", "text": proj_table}},
+        {"type": "section", "text": {"type": "mrkdwn", "text": "*担当者別：期日超過（Top）*"}},
+        {"type": "section", "text": {"type": "mrkdwn", "text": ass_over_table}},
+        {"type": "divider"},
+        {"type": "section", "text": {"type": "mrkdwn", "text": "*参考: 期限未設定（未完）*"}},
+        {"type": "section", "text": {"type": "mrkdwn", "text": due_null_table}},
+        {"type": "context", "elements": [{"type": "mrkdwn", "text": f"データ: `{config.GCP_PROJECT_ID}.{config.BQ_DATASET_ID}.open_tasks_snapshot` / TZ: {tz} / 基準: 期限日とスナップショット時点"}]},
+    ]
+    ql = _quick_links_elements()
+    if ql:
+        blocks.append({"type": "context", "elements": ql})
+    _post_message(blocks, text_fallback="週次プラン & 期日超過（JST）")
 
 def send_dm_to_assignees_for_open_tasks(*args, **kwargs) -> None:
     """(disabled) DM機能は運用対象外のため no-op。"""
